@@ -9,6 +9,7 @@ import {
   leaf,
   leafIds,
   newAgentTab,
+  newExternalTab,
   newChangesTab,
   newCommitTab,
   newFileTab,
@@ -280,6 +281,33 @@ describe("collectWorkspaceSnapshot", () => {
     ]);
     expect(panes[0]!.activeFileId).toBe(file.id);
     expect(leafIds(snapshot.tabs[0]!.layout)).toEqual(["s1"]);
+  });
+
+  it("drops external transcript tabs", () => {
+    const file = newFileTab("/tmp/a/README.md", "/tmp/a");
+    const external = newExternalTab("Login fix", "/tmp/a", {
+      provider: "claude",
+      id: "abc",
+      path: "/home/me/.claude/projects/-tmp-a/abc.jsonl",
+      source: "claude-desktop",
+    });
+    const tab = {
+      ...newTab("s1"),
+      id: "t1",
+      editorPanes: [
+        { id: "e1", files: [file, external], activeFileId: external.id },
+      ],
+    };
+    const snapshot = collectWorkspaceSnapshot(
+      [tab],
+      [],
+      "t1",
+      "/tmp/a",
+      new Map(),
+    );
+    const pane = snapshot.tabs[0]!.editorPanes[0]!;
+    expect(pane.files.map((entry) => entry.id)).toEqual([file.id]);
+    expect(pane.activeFileId).toBe(file.id);
   });
 
   it("round-trips a unified Changes tab", () => {

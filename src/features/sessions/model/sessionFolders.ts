@@ -9,6 +9,8 @@ const KEY = "monocode.sessionFolders";
 const CHANGE_EVENT = "monocode:session-folders-change";
 const PINNED_COLLAPSED_KEY = "monocode.pinnedSessionsCollapsed";
 const REMINDERS_COLLAPSED_KEY = "monocode.reminderSessionsCollapsed";
+/** Stores `true` for expanded: the External group starts collapsed. */
+const EXTERNAL_EXPANDED_KEY = "monocode.externalSessionsExpanded";
 
 export type SessionFolder = {
   id: string;
@@ -492,14 +494,18 @@ export function rebaseSessionFolderSettings(from: string, to: string): void {
 }
 
 export function loadPinnedSessionsCollapsed(cwd: string): boolean {
-  return loadGroupCollapsed(cwd, PINNED_COLLAPSED_KEY);
+  return loadGroupFlag(cwd, PINNED_COLLAPSED_KEY);
 }
 
 export function loadReminderSessionsCollapsed(cwd: string): boolean {
-  return loadGroupCollapsed(cwd, REMINDERS_COLLAPSED_KEY);
+  return loadGroupFlag(cwd, REMINDERS_COLLAPSED_KEY);
 }
 
-function loadGroupCollapsed(cwd: string, storeKey: string): boolean {
+export function loadExternalSessionsExpanded(cwd: string): boolean {
+  return loadGroupFlag(cwd, EXTERNAL_EXPANDED_KEY);
+}
+
+function loadGroupFlag(cwd: string, storeKey: string): boolean {
   const key = storageKey(cwd);
   if (!key) return false;
   try {
@@ -521,19 +527,26 @@ export function savePinnedSessionsCollapsed(
   cwd: string,
   collapsed: boolean,
 ): void {
-  saveGroupCollapsed(cwd, collapsed, PINNED_COLLAPSED_KEY);
+  saveGroupFlag(cwd, collapsed, PINNED_COLLAPSED_KEY);
 }
 
 export function saveReminderSessionsCollapsed(
   cwd: string,
   collapsed: boolean,
 ): void {
-  saveGroupCollapsed(cwd, collapsed, REMINDERS_COLLAPSED_KEY);
+  saveGroupFlag(cwd, collapsed, REMINDERS_COLLAPSED_KEY);
 }
 
-function saveGroupCollapsed(
+export function saveExternalSessionsExpanded(
   cwd: string,
-  collapsed: boolean,
+  expanded: boolean,
+): void {
+  saveGroupFlag(cwd, expanded, EXTERNAL_EXPANDED_KEY);
+}
+
+function saveGroupFlag(
+  cwd: string,
+  value: boolean,
   storeKey: string,
 ): void {
   const key = storageKey(cwd);
@@ -545,7 +558,7 @@ function saveGroupCollapsed(
       parsed && typeof parsed === "object" && !Array.isArray(parsed)
         ? { ...(parsed as Record<string, unknown>) }
         : {};
-    if (collapsed) store[key] = true;
+    if (value) store[key] = true;
     else delete store[key];
     localStorage.setItem(storeKey, JSON.stringify(store));
   } catch {

@@ -205,12 +205,7 @@ pub fn claude_shell_commands(
     }
     let config_dir = match provider_account_id.as_deref() {
         Some(id) if id != "default" => crate::harness::provider_account_path(&app, "claude", id)?,
-        _ => match std::env::var_os("CLAUDE_CONFIG_DIR") {
-            Some(path) => PathBuf::from(path),
-            None => {
-                PathBuf::from(dirs_home().ok_or("Home directory is unavailable")?).join(".claude")
-            }
-        },
+        _ => default_claude_config_dir()?,
     };
     let transcript_name = format!("{provider_session_id}.jsonl");
     let root = config_dir.join("projects");
@@ -223,6 +218,16 @@ pub fn claude_shell_commands(
         return Ok(HashMap::new());
     };
     claude_shell_commands_from_file(&path, &tool_ids)
+}
+
+/// Claude's own config dir: `$CLAUDE_CONFIG_DIR`, else `~/.claude`.
+pub(crate) fn default_claude_config_dir() -> Result<PathBuf, String> {
+    match std::env::var_os("CLAUDE_CONFIG_DIR") {
+        Some(path) => Ok(PathBuf::from(path)),
+        None => {
+            Ok(PathBuf::from(dirs_home().ok_or("Home directory is unavailable")?).join(".claude"))
+        }
+    }
 }
 
 fn claude_shell_commands_from_file(
@@ -5149,7 +5154,7 @@ pub struct FileMtime {
     mtime_ms: Option<u64>,
 }
 
-fn file_mtime_ms(meta: &std::fs::Metadata) -> Option<u64> {
+pub(crate) fn file_mtime_ms(meta: &std::fs::Metadata) -> Option<u64> {
     meta.modified()
         .ok()
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())

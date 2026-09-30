@@ -11,6 +11,7 @@ import {
   CircleDashed,
   CircleDot,
   Clock,
+  Eye,
   FileScript,
   Folder,
   GitBranch,
@@ -82,6 +83,7 @@ import {
   folderAccent,
   folderContaining,
   folderShellFill,
+  loadExternalSessionsExpanded,
   loadPinnedSessionsCollapsed,
   loadReminderSessionsCollapsed,
   loadSessionFolders,
@@ -90,6 +92,7 @@ import {
   removeSessionFromFolder,
   renameFolder,
   reorderSessionFolders,
+  saveExternalSessionsExpanded,
   savePinnedSessionsCollapsed,
   saveReminderSessionsCollapsed,
   saveSessionFolders,
@@ -146,6 +149,8 @@ import {
 } from "../../features/files/ui/ExplorerMenu";
 import { FileTree } from "../../features/files/ui/FileTree";
 import { HarnessIcon } from "../../features/sessions/ui/HarnessIcon";
+import { externalSourceLabel } from "../../features/sessions/ui/ExternalTranscriptView";
+import type { ExternalSession } from "../../platform/tauri/fs";
 import { LiveAgentsPreview } from "../../features/sessions/ui/LiveAgentsPreview";
 import { ProjectRail } from "./ProjectRail";
 import { InboxNotificationMenu } from "../../features/inbox/ui/InboxNotificationMenu";
@@ -227,6 +232,9 @@ type Props = {
   status: "idle" | "error";
   /** First listing for this project has not arrived yet. */
   pending: boolean;
+  /** Conversations other clients wrote for this project; read-only. */
+  externalSessions?: readonly ExternalSession[];
+  onOpenExternalSession?: (session: ExternalSession) => void;
   onSelectSession: (sessionId: string) => void;
   onSelectRemoteSession?: (project: string, sessionId: string) => void;
   onRemoteSessionDeleted?: (sessionId: string) => void;
@@ -326,6 +334,8 @@ function SidebarComponent({
   openSessions = [],
   status,
   pending,
+  externalSessions = [],
+  onOpenExternalSession,
   onSelectSession: onSelectLocalSession,
   onSelectRemoteSession,
   onRemoteSessionDeleted,
@@ -565,6 +575,9 @@ function SidebarComponent({
   );
   const [reminderSessionsCollapsed, setReminderSessionsCollapsed] = useState(
     () => loadReminderSessionsCollapsed(cwd),
+  );
+  const [externalSessionsExpanded, setExternalSessionsExpanded] = useState(
+    () => loadExternalSessionsExpanded(cwd),
   );
   const [sessionDrop, setSessionDrop] = useState<SessionListDropTarget | null>(
     null,
@@ -865,6 +878,7 @@ function SidebarComponent({
     setSessionFolders(loadSessionFolders(cwd));
     setPinnedSessionsCollapsed(loadPinnedSessionsCollapsed(cwd));
     setReminderSessionsCollapsed(loadReminderSessionsCollapsed(cwd));
+    setExternalSessionsExpanded(loadExternalSessionsExpanded(cwd));
     setRenamingFolderId(null);
     setFolderMenu(null);
     setSessionDrop(null);
@@ -1778,7 +1792,7 @@ function SidebarComponent({
                                     }
                                   : { name: "Pinned" }
                               }
-                              sessions={entry.sessions}
+                              count={entry.sessions.length}
                               expanded={expanded}
                               dropTarget={false}
                               busy={entry.sessions.some((session) =>
@@ -1900,7 +1914,7 @@ function SidebarComponent({
                             ) : (
                               <FolderRow
                                 folder={entry.folder}
-                                sessions={entry.sessions}
+                                count={entry.sessions.length}
                                 expanded={expanded}
                                 dropTarget={isSessionDrop(
                                   "folder",
@@ -1993,6 +2007,22 @@ function SidebarComponent({
                   ) : null}
                 </ul>
               )}
+              {/* Kept out of the session list: these are not MonoCode
+                  sessions, so they step aside while the list is narrowed by
+                  search or filters, and keyboard order skips them. */}
+              {externalSessions.length > 0 && !narrowedByUser ? (
+                <ExternalSessionsGroup
+                  sessions={externalSessions}
+                  expanded={externalSessionsExpanded}
+                  now={now}
+                  onToggle={() => {
+                    const expanded = !externalSessionsExpanded;
+                    setExternalSessionsExpanded(expanded);
+                    saveExternalSessionsExpanded(cwd, expanded);
+                  }}
+                  onOpen={onOpenExternalSession}
+                />
+              ) : null}
             </div>
           )}
         </div>
@@ -2733,7 +2763,7 @@ function FolderColorSwatches({
 
 function FolderRow({
   folder,
-  sessions,
+  count,
   expanded,
   dropTarget,
   busy,
@@ -2746,7 +2776,7 @@ function FolderRow({
   onRename,
 }: {
   folder: Pick<SessionFolder, "name" | "colorIndex" | "customColor">;
-  sessions: SessionSummary[];
+  count: number;
   expanded: boolean;
   dropTarget: boolean;
   busy: boolean;
@@ -2758,7 +2788,6 @@ function FolderRow({
   onContextMenu?: (event: ReactMouseEvent<HTMLButtonElement>) => void;
   onRename?: () => void;
 }) {
-  const count = sessions.length;
   const accent = folderAccent(folder.colorIndex, folder.customColor);
   return (
     <button
@@ -2836,6 +2865,68 @@ function FolderRow({
         <span>{count}</span>
       </span>
     </button>
+  );
+}
+
+function ExternalSessionsGroup({
+  sessions,
+  expanded,
+  now,
+  onToggle,
+  onOpen,
+}: {
+  sessions: readonly ExternalSession[];
+  expanded: boolean;
+  now: number;
+  onToggle: () => void;
+  onOpen?: (session: ExternalSession) => void;
+}) {
+  return (
+    <div data-external-sessions className="px-1.5 pb-1.5">
+      <div className="overflow-hidden rounded-md bg-content/5">
+        <FolderRow
+          folder={{ name: "External" }}
+          count={sessions.length}
+          expanded={expanded}
+          dropTarget={false}
+          busy={false}
+          done={false}
+          needsApproval={false}
+          groupIcon={<Eye className="size-3.5" strokeWidth={1.75} />}
+          onToggle={onToggle}
+        />
+        {expanded ? (
+          <ul className="flex flex-col gap-px p-1">
+            {sessions.map((session) => (
+              <li key={`${session.provider}:${session.id}`}>
+                <button
+                  type="button"
+                  data-tauri-drag-region="false"
+                  title={`${session.title} — ${externalSourceLabel(session.provider, session.source)}, read-only`}
+                  onClick={() => onOpen?.(session)}
+                  className="flex w-full min-w-0 items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-content/80 hover:bg-content/10 hover:text-content"
+                >
+                  <HarnessIcon
+                    harness={session.provider}
+                    className="size-3.5 shrink-0"
+                  />
+                  <span className="min-w-0 flex-1 truncate text-[13px] leading-snug">
+                    {session.title}
+                  </span>
+                  <span className="flex shrink-0 items-center gap-0.5 rounded bg-content/10 px-1 text-[10px] leading-4 text-content/55">
+                    <Eye className="size-2.5" strokeWidth={1.75} />
+                    External
+                  </span>
+                  <span className="shrink-0 text-[11px] tabular-nums text-content/45">
+                    {formatRelative(session.updatedAt, now)}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </div>
+    </div>
   );
 }
 

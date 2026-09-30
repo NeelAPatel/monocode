@@ -133,6 +133,8 @@ import {
   type GitFileDiffKind,
   type GitHistoryCommit,
 } from "../platform/tauri/fs";
+import type { ExternalSession } from "../platform/tauri/fs";
+import { useExternalSessions } from "../features/sessions/hooks/useExternalSessions";
 import {
   invalidateProjectFiles,
   prefetchProjectFiles,
@@ -157,6 +159,7 @@ import {
   newEditorWorkspaceTab,
   newFileTab,
   newPlanTab,
+  newExternalTab,
   newTab,
   newTerminalFile,
   newTerminalWorkspaceTab,
@@ -1467,6 +1470,7 @@ export default function App({
     activeFile?.projectCwd ?? activeFile?.cwd ?? active?.cwd ?? projectCwd;
   const sidebarCwdRef = useRef(sidebarCwd);
   sidebarCwdRef.current = sidebarCwd;
+  const externalSessions = useExternalSessions(sidebarCwd);
   const [sidebarTabSelection, setSidebarTabSelection] = useState<{
     project: string;
     tab: SidebarTabId;
@@ -5626,6 +5630,26 @@ export default function App({
         ),
         ...(session.worktreeCwd ? { projectCwd: session.cwd } : {}),
       };
+      setTabs((prev) =>
+        prev.map((entry) =>
+          entry.id === tab.id ? openEditorTab(entry, file) : entry,
+        ),
+      );
+      setComposerFocused(false);
+    },
+    [activeTabId],
+  );
+
+  const onOpenExternalSession = useCallback(
+    (session: ExternalSession) => {
+      const tab = tabsRef.current.find((entry) => entry.id === activeTabId);
+      if (!tab) return;
+      const file = newExternalTab(session.title, sidebarCwdRef.current, {
+        provider: session.provider,
+        id: session.id,
+        path: session.path,
+        source: session.source,
+      });
       setTabs((prev) =>
         prev.map((entry) =>
           entry.id === tab.id ? openEditorTab(entry, file) : entry,
@@ -10546,6 +10570,8 @@ export default function App({
               activeSessionId={active?.id}
               status={historyFailed ? "error" : "idle"}
               pending={historyPending}
+              externalSessions={externalSessions}
+              onOpenExternalSession={onOpenExternalSession}
               onSelectSession={onSelectHistorySession}
               onSelectRemoteSession={onSelectRemoteSession}
               onRemoteSessionDeleted={onRemoteSessionDeleted}

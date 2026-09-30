@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -70,6 +70,35 @@ impl SessionStore {
             .lock()
             .map_err(|_| "Session store is locked".into())
     }
+
+    /// Provider conversation ids MonoCode already owns, archived ones included.
+    pub(crate) fn provider_session_ids(&self) -> Result<HashSet<String>, String> {
+        // The query-only connection keeps this off the writer's lock; tests
+        // open the store in memory without one.
+        let read = self
+            .read_conn
+            .lock()
+            .map_err(|_| "Session store is locked")?;
+        match read.as_ref() {
+            Some(conn) => provider_session_ids(conn),
+            None => provider_session_ids(&*self.lock_conn()?),
+        }
+    }
+}
+
+fn provider_session_ids(conn: &Connection) -> Result<HashSet<String>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT provider_session_id FROM sessions
+             WHERE provider_session_id IS NOT NULL AND provider_session_id != ''",
+        )
+        .map_err(|e| e.to_string())?;
+    let ids = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|e| e.to_string())?
+        .collect::<rusqlite::Result<HashSet<_>>>()
+        .map_err(|e| e.to_string())?;
+    Ok(ids)
 }
 
 pub fn init(app: &AppHandle) -> Result<(), String> {

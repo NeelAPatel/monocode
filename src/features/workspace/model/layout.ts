@@ -1,5 +1,8 @@
 import type { ReleaseNotesTabSource } from "../../../app/model/releaseNotes";
-import type { GitFileDiffKind } from "../../../platform/tauri/fs";
+import type {
+  ExternalProvider,
+  GitFileDiffKind,
+} from "../../../platform/tauri/fs";
 import {
   applyTerminalMeta,
   defaultTerminalTitle,
@@ -51,6 +54,16 @@ export type AgentTabSource = {
   harness: HarnessId;
 };
 
+/** A conversation another client wrote for this project, read in place. */
+export type ExternalTabSource = {
+  provider: ExternalProvider;
+  /** Provider session id. */
+  id: string;
+  path: string;
+  /** Client that wrote it, e.g. `claude-desktop` or `Codex Desktop`. */
+  source: string;
+};
+
 export type SessionChangesSource = {
   sessionId: string;
 };
@@ -74,6 +87,8 @@ export type FilePaneTab = {
   commit?: CommitTabSource;
   /** Read-only transcript of an orchestration worker. Live only — not persisted. */
   agent?: AgentTabSource;
+  /** Read-only transcript from outside MonoCode. Live only — not persisted. */
+  external?: ExternalTabSource;
   terminal?: boolean;
   /** Foreground command when it isn't the shell. Live only — not persisted. */
   foreground?: string;
@@ -307,6 +322,15 @@ export function newAgentTab(
   return { id: crypto.randomUUID(), path: title, cwd, agent };
 }
 
+/** `path` carries the label, as for agent tabs. */
+export function newExternalTab(
+  title: string,
+  cwd: string,
+  external: ExternalTabSource,
+): FilePaneTab {
+  return { id: crypto.randomUUID(), path: title, cwd, external };
+}
+
 export function newTerminalFile(
   cwd: string,
   title?: string,
@@ -430,12 +454,24 @@ export function isAgentTab(
   return !!file.agent;
 }
 
+export function isExternalTab(
+  file: FilePaneTab,
+): file is FilePaneTab & { external: ExternalTabSource } {
+  return !!file.external;
+}
+
+/** Tabs that only mean something in the running window; never saved. */
+export function isLiveOnlyTab(file: FilePaneTab): boolean {
+  return isAgentTab(file) || isExternalTab(file);
+}
+
 export function isVirtualDocumentTab(file: FilePaneTab): boolean {
   return (
     isPlanTab(file) ||
     isReleaseNotesTab(file) ||
     isCommitTab(file) ||
-    isAgentTab(file)
+    isAgentTab(file) ||
+    isExternalTab(file)
   );
 }
 
@@ -514,6 +550,8 @@ export function isSessionChangesTab(
 export function editorTabKey(file: FilePaneTab): string {
   if (file.terminal) return `terminal:${file.id}`;
   if (file.agent) return `agent:${file.agent.sessionId}`;
+  if (file.external)
+    return `external:${file.external.provider}:${file.external.id}`;
   if (file.plan) return `plan:${file.plan.blockId}`;
   if (file.releaseNotes) return `release-notes:${file.releaseNotes.version}`;
   if (file.commit) return `commit:${file.cwd}:${file.commit.sha}`;
@@ -543,6 +581,7 @@ export function isPreviewableTab(file: FilePaneTab): boolean {
   return (
     !file.terminal &&
     !file.agent &&
+    !file.external &&
     !file.plan &&
     !file.releaseNotes &&
     !file.changes

@@ -10,6 +10,7 @@ import {
   isAgentTab,
   isChangesTab,
   isCommitTab,
+  isExternalTab,
   isPlanTab,
   isReleaseNotesTab,
   isReviewTab,
@@ -30,6 +31,7 @@ import {
   subscribeDiffViewer,
 } from "../../settings/model/settings";
 import { AgentTabView } from "../../sessions/ui/AgentTabView";
+import { ExternalTranscriptView } from "../../sessions/ui/ExternalTranscriptView";
 import { MarkdownPreview } from "../../sessions/ui/AgentMarkdown";
 import { BinaryFileView } from "./BinaryFileView";
 import { ReleaseNotesSurface } from "../../../app/ui/ReleaseNotesSurface";
@@ -186,6 +188,15 @@ function FilePaneComponent({
                   session={sessions.find(
                     (entry) => entry.id === file.agent.sessionId,
                   )}
+                  visible={file.id === pane.activeFileId}
+                  focused={focused && file.id === pane.activeFileId}
+                  onOpenFile={onOpenFile}
+                />
+              ) : isExternalTab(file) ? (
+                <ExternalTranscriptView
+                  title={file.path}
+                  cwd={file.cwd}
+                  external={file.external}
                   visible={file.id === pane.activeFileId}
                   focused={focused && file.id === pane.activeFileId}
                   onOpenFile={onOpenFile}

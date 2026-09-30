@@ -14,6 +14,7 @@ import {
 } from "../../../platform/tauri/fs";
 import {
   isAgentTab,
+  isExternalTab,
   isChangesTab,
   isCommitTab,
   isFilesystemTab,
@@ -149,6 +150,16 @@ export function surfaceTabPresentation(
       label: name,
       iconName: "AGENT",
       tooltip: `${name} — orchestration agent`,
+    };
+  }
+
+  if (isExternalTab(file)) {
+    const name = file.path.trim() || "External chat";
+    return {
+      name,
+      label: name,
+      iconName: "AGENT",
+      tooltip: `${name} — external · read-only`,
     };
   }
 
@@ -301,6 +312,9 @@ export function SurfaceTabs({
           const review = isReviewTab(file) && !changes;
           const terminal = isTerminalTab(file);
           const agent = isAgentTab(file) ? file.agent : null;
+          const tabHarness =
+            agent?.harness ??
+            (isExternalTab(file) ? file.external.provider : undefined);
           const { label, iconName, tooltip } = surfaceTabPresentation(file);
           const tab = (
             <div
@@ -369,9 +383,9 @@ export function SurfaceTabs({
               >
                 {terminal ? (
                   <Terminal className="size-3.5 shrink-0" strokeWidth={1.75} />
-                ) : agent ? (
+                ) : tabHarness ? (
                   <HarnessIcon
-                    harness={agent.harness}
+                    harness={tabHarness}
                     className="size-3.5 shrink-0"
                   />
                 ) : changes || commit || review ? (

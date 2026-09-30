@@ -89,6 +89,34 @@ export function claudeShellCommands(
   });
 }
 
+export type ExternalProvider = "claude" | "codex";
+
+/** A conversation a provider started for this project outside MonoCode. */
+export type ExternalSession = {
+  provider: ExternalProvider;
+  id: string;
+  title: string;
+  /** Client that wrote it: Claude's `entrypoint` or Codex's `originator`. */
+  source: string;
+  updatedAt: number;
+  path: string;
+};
+
+export function listExternalSessions(cwd: string): Promise<ExternalSession[]> {
+  return invoke<ExternalSession[]>("list_external_sessions", { cwd });
+}
+
+/** Conversation records of one external transcript, trimmed for display. */
+export function readExternalSession(
+  provider: ExternalProvider,
+  path: string,
+): Promise<Record<string, unknown>[]> {
+  return invoke<Record<string, unknown>[]>("read_external_session", {
+    provider,
+    path,
+  });
+}
+
 export type FsEntry = {
   name: string;
   path: string;
