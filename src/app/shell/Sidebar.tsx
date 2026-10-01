@@ -2957,10 +2957,6 @@ function ExternalSessionsGroup({
                   <span className="min-w-0 flex-1 truncate text-[13px] leading-snug">
                     {session.title}
                   </span>
-                  <span className="flex shrink-0 items-center gap-0.5 rounded bg-content/10 px-1 text-[10px] leading-4 text-content/55">
-                    <Eye className="size-2.5" strokeWidth={1.75} />
-                    External
-                  </span>
                   <span
                     className={`shrink-0 text-[11px] tabular-nums text-content/45 ${onContinue ? "group-focus-within/external:invisible group-hover/external:invisible" : ""}`}
                   >
