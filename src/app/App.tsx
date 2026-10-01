@@ -5878,7 +5878,12 @@ export default function App({
         sessionsRef.current = next;
         setSessions(next);
         if (summary && summary.cwd === sidebarCwdRef.current) {
-          setHistory((current) => mergeProjectHistorySummary(current, summary));
+          setHistory((current) =>
+            mergeProjectHistorySummary(current, {
+              ...summary,
+              providerLinks: adopted.providerLinks,
+            }),
+          );
         }
         await onSelectHistorySession(adopted.id);
         // The chat lives on as the session; its read-only tab goes.
