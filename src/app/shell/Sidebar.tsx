@@ -2970,9 +2970,15 @@ function ExternalSessionsGroup({
                     title="Continue in MonoCode"
                     aria-label={`Continue ${session.title} in MonoCode`}
                     onClick={() => onContinue(session)}
-                    className="pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 rounded px-1.5 py-0.5 text-[11px] text-accent opacity-0 hover:bg-content/10 group-focus-within/external:pointer-events-auto group-focus-within/external:opacity-100 group-hover/external:pointer-events-auto group-hover/external:opacity-100"
+                    className="pointer-events-none absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-accent opacity-0 hover:bg-content/10 group-focus-within/external:pointer-events-auto group-focus-within/external:opacity-100 group-hover/external:pointer-events-auto group-hover/external:opacity-100"
                   >
-                    Continue
+                    Continue in
+                    <img
+                      src="/monocode.png"
+                      alt=""
+                      aria-hidden
+                      className="size-3.5 shrink-0 object-contain"
+                    />
                   </button>
                 ) : null}
               </li>

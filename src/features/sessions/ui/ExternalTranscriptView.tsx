@@ -151,9 +151,16 @@ export function ExternalTranscriptView({
             disabled={continuing}
             onClick={continueHere}
             title="Continue this chat as a MonoCode session"
-            className="ml-auto shrink-0 rounded px-1.5 py-0.5 text-accent hover:bg-content/10 disabled:opacity-50"
+            aria-label="Continue in MonoCode"
+            className="ml-auto flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-accent hover:bg-content/10 disabled:opacity-50"
           >
-            {continuing ? "Continuing…" : "Continue in MonoCode"}
+            {continuing ? "Continuing…" : "Continue in"}
+            <img
+              src="/monocode.png"
+              alt=""
+              aria-hidden
+              className="size-3.5 shrink-0 object-contain"
+            />
           </button>
         ) : (
           <span className="ml-auto shrink-0">read-only</span>
