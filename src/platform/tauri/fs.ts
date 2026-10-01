@@ -167,6 +167,19 @@ export function externalSessionStat(
   }).then(([size, mtimeMs]) => ({ size, mtimeMs }));
 }
 
+/** Another app that has a conversation open right now. */
+export type ExternalOwner = { app: string; status?: string };
+
+export function externalSessionOwner(
+  provider: ExternalProvider,
+  id: string,
+): Promise<ExternalOwner | null> {
+  return invoke<ExternalOwner | null>("external_session_owner", {
+    provider,
+    id,
+  });
+}
+
 /** Note that MonoCode is caught up with an adopted transcript. */
 export function markExternalSessionSynced(
   sessionId: string,

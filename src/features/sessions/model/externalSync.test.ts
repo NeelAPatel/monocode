@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { adoptedLink, mergeForeignTurns } from "./externalSync";
+import {
+  adoptedLink,
+  externalOwnerNotice,
+  mergeForeignTurns,
+} from "./externalSync";
 import type { Block, ProviderLink } from "./session";
 
 const user = (id: string, text: string, startedAt: number): Block => ({
@@ -95,5 +99,17 @@ describe("adoptedLink", () => {
         providerLinks: [{ ...link, origin: "monocode" }],
       }),
     ).toBeUndefined();
+  });
+});
+
+describe("externalOwnerNotice", () => {
+  it("names the app and whether it is mid-turn", () => {
+    expect(
+      externalOwnerNotice({ app: "claude-desktop", status: "busy" }),
+    ).toMatch(/^Claude Desktop is working in this chat/);
+    expect(externalOwnerNotice({ app: "codex-desktop" })).toMatch(
+      /^Codex Desktop has this chat open/,
+    );
+    expect(externalOwnerNotice({ app: "sdk-py" })).toMatch(/^Another app has/);
   });
 });

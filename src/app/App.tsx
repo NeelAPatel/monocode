@@ -134,15 +134,18 @@ import {
   type GitHistoryCommit,
 } from "../platform/tauri/fs";
 import {
+  externalSessionOwner,
   externalSessionStat,
   linkAdoptedExternalSession,
   markExternalSessionSynced,
   readExternalSession,
   readExternalSessionSince,
+  type ExternalOwner,
   type ExternalSession,
 } from "../platform/tauri/fs";
 import {
   adoptedLink,
+  externalOwnerNotice,
   mergeForeignTurns,
 } from "../features/sessions/model/externalSync";
 import { claudeTranscriptToBlocks } from "../integrations/harness/providers/claude/claudeTranscript";
@@ -860,6 +863,9 @@ function filesInWorkspaceTabs(tabs: readonly WorkspaceTab[]): FilePaneTab[] {
     ...(tab.terminalPanes ?? []).flatMap((pane) => pane.files),
   ]);
 }
+
+/** How often the active adopted chat is checked for another app holding it. */
+const EXTERNAL_OWNER_POLL_MS = 5_000;
 
 /** Native sheet. `window.confirm` is swallowed when a macOS menu accelerator fires. */
 function confirmDiscardUnsaved(message: string): Promise<boolean> {
@@ -1749,15 +1755,46 @@ export default function App({
     [replaceProviderLink],
   );
 
+  // Who else has an adopted chat open, kept current for the active one so a
+  // send can be refused on the spot and the message stays in the composer.
+  const externalOwners = useRef(new Map<string, ExternalOwner>());
+  const checkExternalOwner = useCallback(async (sessionId: string) => {
+    const session = sessionsRef.current.find((entry) => entry.id === sessionId);
+    const link = session && adoptedLink(session);
+    if (!link) {
+      externalOwners.current.delete(sessionId);
+      return;
+    }
+    const owner = await externalSessionOwner(
+      link.harness,
+      link.providerSessionId,
+    ).catch(() => null);
+    if (owner) externalOwners.current.set(sessionId, owner);
+    else externalOwners.current.delete(sessionId);
+  }, []);
+
   useEffect(() => {
     if (!activeSessionId) return;
     const check = () => {
+      void checkExternalOwner(activeSessionId);
       void syncAdoptedSession(activeSessionId).catch(() => undefined);
     };
     check();
     window.addEventListener("focus", check);
-    return () => window.removeEventListener("focus", check);
-  }, [activeSessionId, syncAdoptedSession]);
+    // Another app can open the chat without MonoCode losing focus.
+    const poll = window.setInterval(() => {
+      const session = sessionsRef.current.find(
+        (entry) => entry.id === activeSessionId,
+      );
+      if (session && !session.busy && adoptedLink(session)) {
+        void checkExternalOwner(activeSessionId);
+      }
+    }, EXTERNAL_OWNER_POLL_MS);
+    return () => {
+      window.removeEventListener("focus", check);
+      window.clearInterval(poll);
+    };
+  }, [activeSessionId, checkExternalOwner, syncAdoptedSession]);
 
   // A finished MonoCode turn grew the transcript itself; move the marker past
   // it so only later writes count as another client's.
@@ -6402,6 +6439,21 @@ export default function App({
         return true;
       }
 
+      // One owner at a time: a turn from here while another app has the
+      // chat open would interleave the two in the transcript.
+      const externalOwner = adoptedLink(current)
+        ? externalOwners.current.get(sessionId)
+        : undefined;
+      if (externalOwner && !current.busy) {
+        enqueueHarnessEvent(sessionId, {
+          type: "status",
+          text: externalOwnerNotice(externalOwner),
+        });
+        flushHarnessEvents();
+        void checkExternalOwner(sessionId);
+        return false;
+      }
+
       // Catch up with turns another client added before resuming the chat.
       if (!options?.externalSynced && !current.busy && adoptedLink(current)) {
         return (async () => {
@@ -7247,6 +7299,7 @@ export default function App({
       dismissNoticesForContinuedSession,
       enqueueHarnessEvent,
       flushHarnessEvents,
+      checkExternalOwner,
       syncAdoptedSession,
     ],
   );

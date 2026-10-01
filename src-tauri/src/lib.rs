@@ -418,6 +418,7 @@ pub fn run() {
             external_sessions::read_external_session_since,
             external_sessions::session_mark_external_synced,
             external_sessions::external_session_stat,
+            external_sessions::external_session_owner,
             fs::write_text_file,
             skills::list_skills,
             search::search_project,

@@ -23,6 +23,23 @@ export function adoptedLink(
   return link as ProviderLink & { harness: "claude" | "codex"; path: string };
 }
 
+/** Why a turn cannot start while another app has the chat open. */
+export function externalOwnerNotice(owner: {
+  app: string;
+  status?: string;
+}): string {
+  const app = OWNER_APP_LABEL[owner.app] ?? "Another app";
+  const doing = owner.status === "busy" ? "is working in" : "has";
+  return `${app} ${doing} this chat open right now. Finish or close it there, then send again here, so the two do not mix up its turns.`;
+}
+
+const OWNER_APP_LABEL: Record<string, string> = {
+  "claude-desktop": "Claude Desktop",
+  cli: "Claude Code",
+  "codex-desktop": "Codex Desktop",
+  codex: "Codex",
+};
+
 export type ForeignMerge = { blocks: Block[]; added: number };
 
 /**

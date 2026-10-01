@@ -188,6 +188,187 @@ pub fn external_session_stat(provider: String, path: String) -> Result<(i64, i64
     Ok((size as i64, modified_ms(&path)))
 }
 
+/// Another app that has a conversation open right now.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalOwner {
+    /// Claude's `entrypoint` (e.g. `claude-desktop`), or `codex-desktop` /
+    /// `codex` for the Codex process holding the thread.
+    pub app: String,
+    /// Claude's `idle` or `busy`, when it says.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+}
+
+/// Whether a process outside MonoCode has this conversation open, so a turn
+/// from MonoCode would interleave with it. MonoCode's own provider processes
+/// are not owners.
+#[tauri::command(async)]
+pub fn external_session_owner(
+    provider: String,
+    id: String,
+) -> Result<Option<ExternalOwner>, String> {
+    match provider.as_str() {
+        "claude" => Ok(claude_owner(
+            &crate::fs::default_claude_config_dir()?.join("sessions"),
+            &id,
+            &|pid, started| process_alive(pid, started) && !spawned_by_us(pid),
+        )),
+        "codex" => Ok(codex_owner(&codex_home()?, &id)),
+        _ => Err("Unknown external session provider".into()),
+    }
+}
+
+/// Claude registers each running session as `sessions/<pid>.json`.
+fn claude_owner(
+    sessions_dir: &Path,
+    id: &str,
+    foreign_and_alive: &dyn Fn(u32, Option<&str>) -> bool,
+) -> Option<ExternalOwner> {
+    std::fs::read_dir(sessions_dir)
+        .ok()?
+        .flatten()
+        .filter(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("json"))
+        .filter_map(|entry| {
+            serde_json::from_str::<Value>(&std::fs::read_to_string(entry.path()).ok()?).ok()
+        })
+        .find_map(|record| {
+            if record.get("sessionId").and_then(Value::as_str) != Some(id) {
+                return None;
+            }
+            let pid = u32::try_from(record.get("pid")?.as_u64()?).ok()?;
+            let entrypoint = record
+                .get("entrypoint")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            // Off Linux MonoCode cannot tell its own child by ancestry; its
+            // Claude runs as the SDK, which no person-facing client does.
+            if !cfg!(target_os = "linux") && entrypoint.starts_with("sdk-") {
+                return None;
+            }
+            let started = record.get("procStart").and_then(Value::as_str);
+            foreign_and_alive(pid, started).then(|| ExternalOwner {
+                app: entrypoint.to_owned(),
+                status: record
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+            })
+        })
+}
+
+/// Codex holds `thread-writer-locks/<id>.lock` with `flock` while a process
+/// has the thread loaded. Taking the lock to test it could make a real writer
+/// fail, so the holder is read from `/proc/locks` instead (Linux only).
+fn codex_owner(home: &Path, id: &str) -> Option<ExternalOwner> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let lock = home.join("thread-writer-locks").join(format!("{id}.lock"));
+        let inode = std::fs::metadata(lock).ok()?.ino();
+        let locks = std::fs::read_to_string("/proc/locks").ok()?;
+        let holder = lock_holders(&locks, inode)
+            .into_iter()
+            .find(|pid| !spawned_by_us(*pid))?;
+        let command =
+            std::fs::read_to_string(format!("/proc/{holder}/cmdline")).unwrap_or_default();
+        Some(ExternalOwner {
+            app: if command.contains("app-server-daemon") {
+                "codex-desktop".into()
+            } else {
+                "codex".into()
+            },
+            status: None,
+        })
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (home, id);
+        None
+    }
+}
+
+/// Pids holding a lock on `inode`, from `/proc/locks` lines such as
+/// `1: FLOCK  ADVISORY  WRITE 4242 00:2a:9876 0 EOF`. Waiting requests,
+/// marked `->`, hold nothing.
+fn lock_holders(locks: &str, inode: u64) -> Vec<u32> {
+    locks
+        .lines()
+        .filter(|line| !line.contains("->"))
+        .filter_map(|line| {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            let at = fields
+                .iter()
+                .position(|field| field.split(':').count() == 3 && field.contains(':'))?;
+            let node = fields[at].rsplit(':').next()?.parse::<u64>().ok()?;
+            let pid = fields.get(at.checked_sub(1)?)?.parse::<u32>().ok()?;
+            (node == inode).then_some(pid)
+        })
+        .collect()
+}
+
+/// Running, and the same process Claude registered rather than a later one
+/// that reused its pid.
+fn process_alive(pid: u32, started: Option<&str>) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            return false;
+        };
+        match started {
+            Some(started) => proc_stat_field(&stat, 22) == Some(started),
+            None => true,
+        }
+    }
+    #[cfg(all(unix, not(target_os = "linux")))]
+    {
+        let _ = started;
+        unsafe { libc::kill(pid as i32, 0) == 0 }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (pid, started);
+        true
+    }
+}
+
+/// MonoCode, or a process it started (its provider CLIs and app-servers).
+fn spawned_by_us(pid: u32) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        let own = std::process::id();
+        let mut current = pid;
+        for _ in 0..64 {
+            if current == own {
+                return true;
+            }
+            let Some(parent) = std::fs::read_to_string(format!("/proc/{current}/stat"))
+                .ok()
+                .and_then(|stat| proc_stat_field(&stat, 4)?.parse::<u32>().ok())
+            else {
+                return false;
+            };
+            if parent <= 1 {
+                return false;
+            }
+            current = parent;
+        }
+        false
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
+/// Field `n` (1-based) of `/proc/<pid>/stat`. The command name in field 2 may
+/// hold spaces and parentheses, so counting starts after its last `)`.
+fn proc_stat_field(stat: &str, n: usize) -> Option<&str> {
+    let rest = &stat[stat.rfind(')')? + 1..];
+    rest.split_whitespace().nth(n.checked_sub(3)?)
+}
+
 fn checked_transcript_path(roots: &[PathBuf], path: &Path) -> Result<PathBuf, String> {
     let path = path.canonicalize().map_err(|error| error.to_string())?;
     let inside = roots
@@ -1040,6 +1221,56 @@ mod tests {
         assert_eq!(tail.len(), 1);
         assert_eq!(tail[0]["uuid"], "u2");
         assert_eq!(read_claude_records_from(&path, 0).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn claude_owner_is_a_live_registered_process_outside_monocode() {
+        let dir = tmp("owners");
+        std::fs::create_dir_all(&dir.0).unwrap();
+        let entry = |pid: u32, session: &str, entrypoint: &str, status: &str| {
+            std::fs::write(
+                dir.0.join(format!("{pid}.json")),
+                json!({"pid":pid,"sessionId":session,"entrypoint":entrypoint,
+                    "status":status,"procStart":format!("{pid}0")})
+                .to_string(),
+            )
+            .unwrap();
+        };
+        entry(10, "chat", "claude-desktop", "busy");
+        entry(11, "other", "cli", "idle");
+        std::fs::write(dir.0.join("12.key"), "x").unwrap();
+        let foreign = |pid: u32, started: Option<&str>| pid == 10 && started == Some("100");
+        assert_eq!(
+            claude_owner(&dir.0, "chat", &foreign),
+            Some(ExternalOwner {
+                app: "claude-desktop".into(),
+                status: Some("busy".into())
+            })
+        );
+        assert_eq!(claude_owner(&dir.0, "other", &foreign), None);
+        assert_eq!(claude_owner(&dir.0, "missing", &foreign), None);
+        assert_eq!(claude_owner(&dir.0.join("nope"), "chat", &foreign), None);
+    }
+
+    #[test]
+    fn reads_lock_holders_and_proc_stat_fields() {
+        let locks = "1: FLOCK  ADVISORY  WRITE 4242 00:2a:9876 0 EOF\n\
+                     2: POSIX  ADVISORY  WRITE 77 fd:01:555 0 EOF\n\
+                     3: -> FLOCK  ADVISORY  WRITE 88 00:2a:9876 0 EOF\n";
+        assert_eq!(lock_holders(locks, 9876), [4242]);
+        assert_eq!(lock_holders(locks, 555), [77]);
+        assert!(lock_holders(locks, 1).is_empty());
+        let stat = "123 (my (odd) name) S 45 123 123 0 -1 4194560 1 2 3 4 5 6 7 8 20 0 1 0 9988 0";
+        assert_eq!(proc_stat_field(stat, 4), Some("45"));
+        assert_eq!(proc_stat_field(stat, 22), Some("9988"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn monocode_is_never_its_own_owner() {
+        assert!(spawned_by_us(std::process::id()));
+        assert!(process_alive(std::process::id(), None));
+        assert!(!process_alive(std::process::id(), Some("not-a-start-time")));
     }
 
     #[test]
