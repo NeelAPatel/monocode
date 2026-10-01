@@ -211,6 +211,10 @@ pub struct SessionSummary {
     pub linked_work_item: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub automation_id: Option<String>,
+    /// Filled only for sessions with an adopted or handed-back conversation,
+    /// which the sidebar marks; empty for everything else.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_links: Vec<ProviderLink>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1149,6 +1153,43 @@ fn adopt_provider_link(
     Ok(())
 }
 
+/// A session's links when one of them was adopted or handed back, which is
+/// what the sidebar marks; none otherwise.
+fn external_links(conn: &Connection, session_id: &str) -> rusqlite::Result<Vec<ProviderLink>> {
+    let marked: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM session_provider_links
+                       WHERE session_id = ?1
+                         AND (origin = 'external' OR handed_back_at IS NOT NULL))",
+        [session_id],
+        |row| row.get(0),
+    )?;
+    if marked {
+        provider_links(conn, session_id)
+    } else {
+        Ok(Vec::new())
+    }
+}
+
+fn attach_external_links(
+    conn: &Connection,
+    sessions: &mut [SessionSummary],
+) -> rusqlite::Result<()> {
+    let mut statement = conn.prepare(
+        "SELECT DISTINCT session_id FROM session_provider_links
+         WHERE origin = 'external' OR handed_back_at IS NOT NULL",
+    )?;
+    let marked = statement
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<HashSet<_>>>()?;
+    for session in sessions
+        .iter_mut()
+        .filter(|session| marked.contains(&session.id))
+    {
+        session.provider_links = provider_links(conn, &session.id)?;
+    }
+    Ok(())
+}
+
 fn provider_links(conn: &Connection, session_id: &str) -> rusqlite::Result<Vec<ProviderLink>> {
     let mut statement = conn.prepare(
         "SELECT provider_session_id, harness, provider_account_id, origin, source, path,
@@ -1460,6 +1501,7 @@ fn upsert_session(conn: &Connection, session: &SessionUpsert) -> rusqlite::Resul
         draft: is_draft,
         linked_work_item: session.linked_work_item.clone(),
         automation_id: automation_id.map(str::to_owned),
+        provider_links: external_links(conn, &session.id)?,
     })
 }
 
@@ -1833,9 +1875,12 @@ fn list_by_project(conn: &Connection, cwd: &str) -> rusqlite::Result<Vec<Session
             draft: row.get::<_, i64>(16)? != 0,
             linked_work_item,
             automation_id: nonempty(row.get(17)?),
+            provider_links: Vec::new(),
         })
     })?;
-    rows.collect()
+    let mut sessions = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    attach_external_links(conn, &mut sessions)?;
+    Ok(sessions)
 }
 
 fn list_linked(conn: &Connection) -> rusqlite::Result<Vec<SessionSummary>> {
@@ -1878,9 +1923,12 @@ fn list_linked(conn: &Connection) -> rusqlite::Result<Vec<SessionSummary>> {
             draft: row.get::<_, i64>(16)? != 0,
             linked_work_item: optional_json(row.get(12)?),
             automation_id: nonempty(row.get(17)?),
+            provider_links: Vec::new(),
         })
     })?;
-    rows.collect()
+    let mut sessions = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    attach_external_links(conn, &mut sessions)?;
+    Ok(sessions)
 }
 
 /// Mirrors the sidebar's notion of a listable session: a transcript that the
@@ -2671,6 +2719,20 @@ mod tests {
             .provider_links;
         assert_eq!(links.len(), 1);
         assert_eq!(links[0].origin, "external");
+        // The sidebar listing and save summary carry it; plain sessions don't.
+        let mut plain = sample("s2", "/tmp/a", "Plain");
+        plain.provider_session_id = Some("own-1".into());
+        plain.blocks = json!([{"id":"u1","role":"user","text":"a"}]);
+        let conn = store.conn.lock().unwrap();
+        assert!(upsert_session(&conn, &plain)
+            .unwrap()
+            .provider_links
+            .is_empty());
+        assert_eq!(upsert_session(&conn, &row).unwrap().provider_links.len(), 1);
+        let listed = list_by_project(&conn, "/tmp/a").unwrap();
+        let by_id = |id: &str| listed.iter().find(|summary| summary.id == id).unwrap();
+        assert_eq!(by_id("s1").provider_links.len(), 1);
+        assert!(by_id("s2").provider_links.is_empty());
     }
 
     #[test]

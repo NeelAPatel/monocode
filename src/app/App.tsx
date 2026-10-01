@@ -5748,6 +5748,12 @@ export default function App({
     [externalSessions.refresh, onCloseFile, onSelectHistorySession],
   );
 
+  const onContinueExternalSession = useCallback(
+    (session: ExternalSession) =>
+      void onContinueExternal(session, session.title),
+    [onContinueExternal],
+  );
+
   const onPinFile = useCallback((fileId: string) => {
     setTabs((prev) => {
       const next = prev.map((tab) => pinEditorFile(tab, fileId));
@@ -10663,6 +10669,7 @@ export default function App({
               externalSessionsRefreshing={externalSessions.refreshing}
               onRefreshExternalSessions={externalSessions.refresh}
               onOpenExternalSession={onOpenExternalSession}
+              onContinueExternalSession={onContinueExternalSession}
               onSelectSession={onSelectHistorySession}
               onSelectRemoteSession={onSelectRemoteSession}
               onRemoteSessionDeleted={onRemoteSessionDeleted}

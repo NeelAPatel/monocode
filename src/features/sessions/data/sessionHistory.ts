@@ -120,6 +120,9 @@ export function summaryFromSession(
       ? { linkedWorkItem: session.linkedWorkItem }
       : {}),
     ...(session.automationId ? { automationId: session.automationId } : {}),
+    ...(session.providerLinks?.length
+      ? { providerLinks: session.providerLinks }
+      : {}),
     ...(!session.worktreeRemoved && (session.branch || git?.branch)
       ? { branch: session.branch || git?.branch }
       : {}),

@@ -64,6 +64,8 @@ export type SessionSummary = {
   draft?: boolean;
   linkedWorkItem?: LinkedWorkItem;
   automationId?: string;
+  /** Present only when a conversation was adopted or handed back. */
+  providerLinks?: ProviderLink[];
 };
 
 type SessionRecord = {
@@ -1028,6 +1030,7 @@ function sanitizeTaskList(value: unknown): TaskListMeta | null {
 
 function normalizeSummary(summary: SessionSummary): SessionSummary {
   const linkedWorkItem = sanitizeLinkedWorkItem(summary.linkedWorkItem);
+  const providerLinks = sanitizeProviderLinks(summary.providerLinks);
   return {
     ...summary,
     harness: asHarness(summary.harness),
@@ -1047,6 +1050,7 @@ function normalizeSummary(summary: SessionSummary): SessionSummary {
     isPersistableId(summary.automationId)
       ? { automationId: summary.automationId }
       : {}),
+    providerLinks: providerLinks.length > 0 ? providerLinks : undefined,
   };
 }
 

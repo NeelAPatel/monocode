@@ -160,6 +160,7 @@ import { TerminalSpinner } from "../../features/sessions/ui/TerminalSpinner";
 import { DevModeSlot, IconButton, TabVisitNav } from "./TitleBar";
 import { ProjectSearch } from "../../features/projects/ui/ProjectSearch";
 import { Popover } from "../../shared/ui/Popover";
+import { ExternalPill } from "../../features/sessions/ui/ExternalPill";
 import { SearchableProjectPicker } from "../../features/projects/ui/SearchableProjectPicker";
 import { useProjectMenu } from "./useProjectMenu";
 import { SessionFiltersMenu } from "../../features/sessions/ui/SessionFiltersMenu";
@@ -238,6 +239,7 @@ type Props = {
   externalSessionsRefreshing?: boolean;
   onRefreshExternalSessions?: () => void;
   onOpenExternalSession?: (session: ExternalSession) => void;
+  onContinueExternalSession?: (session: ExternalSession) => void;
   onSelectSession: (sessionId: string) => void;
   onSelectRemoteSession?: (project: string, sessionId: string) => void;
   onRemoteSessionDeleted?: (sessionId: string) => void;
@@ -341,6 +343,7 @@ function SidebarComponent({
   externalSessionsRefreshing = false,
   onRefreshExternalSessions,
   onOpenExternalSession,
+  onContinueExternalSession,
   onSelectSession: onSelectLocalSession,
   onSelectRemoteSession,
   onRemoteSessionDeleted,
@@ -2030,6 +2033,7 @@ function SidebarComponent({
                     if (expanded) onRefreshExternalSessions?.();
                   }}
                   onOpen={onOpenExternalSession}
+                  onContinue={onContinueExternalSession}
                 />
               ) : null}
             </div>
@@ -2885,6 +2889,7 @@ function ExternalSessionsGroup({
   onToggle,
   onRefresh,
   onOpen,
+  onContinue,
 }: {
   sessions: readonly ExternalSession[];
   expanded: boolean;
@@ -2893,6 +2898,7 @@ function ExternalSessionsGroup({
   onToggle: () => void;
   onRefresh?: () => void;
   onOpen?: (session: ExternalSession) => void;
+  onContinue?: (session: ExternalSession) => void;
 }) {
   return (
     <div data-external-sessions className="px-1.5 pb-1.5">
@@ -2933,7 +2939,10 @@ function ExternalSessionsGroup({
         {expanded ? (
           <ul className="flex flex-col gap-px p-1">
             {sessions.map((session) => (
-              <li key={`${session.provider}:${session.id}`}>
+              <li
+                key={`${session.provider}:${session.id}`}
+                className="group/external relative"
+              >
                 <button
                   type="button"
                   data-tauri-drag-region="false"
@@ -2952,10 +2961,24 @@ function ExternalSessionsGroup({
                     <Eye className="size-2.5" strokeWidth={1.75} />
                     External
                   </span>
-                  <span className="shrink-0 text-[11px] tabular-nums text-content/45">
+                  <span
+                    className={`shrink-0 text-[11px] tabular-nums text-content/45 ${onContinue ? "group-focus-within/external:invisible group-hover/external:invisible" : ""}`}
+                  >
                     {formatRelative(session.updatedAt, now)}
                   </span>
                 </button>
+                {onContinue ? (
+                  <button
+                    type="button"
+                    data-tauri-drag-region="false"
+                    title="Continue in MonoCode"
+                    aria-label={`Continue ${session.title} in MonoCode`}
+                    onClick={() => onContinue(session)}
+                    className="pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 rounded px-1.5 py-0.5 text-[11px] text-accent opacity-0 hover:bg-content/10 group-focus-within/external:pointer-events-auto group-focus-within/external:opacity-100 group-hover/external:pointer-events-auto group-hover/external:opacity-100"
+                  >
+                    Continue
+                  </button>
+                ) : null}
               </li>
             ))}
           </ul>
@@ -3495,6 +3518,7 @@ const SessionCard = memo(function SessionCard({
                 <Archive className="size-3 shrink-0" strokeWidth={1.75} />
               </button>
             ) : null}
+            <ExternalPill session={session} />
             {workItemBadge}
             {session.automationId ? (
               <span
