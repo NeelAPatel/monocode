@@ -414,6 +414,7 @@ pub fn run() {
             fs::claude_shell_commands,
             external_sessions::list_external_sessions,
             external_sessions::read_external_session,
+            external_sessions::adopt_external_session,
             fs::write_text_file,
             skills::list_skills,
             search::search_project,

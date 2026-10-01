@@ -71,6 +71,22 @@ impl SessionStore {
             .map_err(|_| "Session store is locked".into())
     }
 
+    /// Mark one of a session's conversations as adopted from another client.
+    pub(crate) fn adopt_provider_link(
+        &self,
+        session_id: &str,
+        link: &ProviderLink,
+    ) -> Result<ProviderLink, String> {
+        validate_id(session_id, "session")?;
+        let conn = self.lock_conn()?;
+        adopt_provider_link(&conn, session_id, link).map_err(|e| e.to_string())?;
+        provider_links(&conn, session_id)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|stored| stored.provider_session_id == link.provider_session_id)
+            .ok_or_else(|| "Adopted conversation was not recorded".into())
+    }
+
     /// Provider conversation ids MonoCode already owns, archived ones included.
     pub(crate) fn provider_session_ids(&self) -> Result<HashSet<String>, String> {
         // The query-only connection keeps this off the writer's lock; tests
@@ -1089,6 +1105,45 @@ fn link_current_provider(
             provider_account_id,
             user_turns.saturating_sub(1) as i64,
             now,
+        ],
+    )?;
+    Ok(())
+}
+
+/// The first save may already have linked the conversation as MonoCode's
+/// own, so adoption overwrites what that save guessed.
+fn adopt_provider_link(
+    conn: &Connection,
+    session_id: &str,
+    link: &ProviderLink,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO session_provider_links
+           (session_id, provider_session_id, harness, provider_account_id, origin,
+            source, path, first_user_turn, created_at, adopted_at, synced_size,
+            synced_mtime_ms)
+         VALUES (?1, ?2, ?3, ?4, 'external', ?5, ?6, ?7, ?8, ?8, ?9, ?10)
+         ON CONFLICT(session_id, provider_session_id) DO UPDATE SET
+           harness = excluded.harness,
+           provider_account_id = excluded.provider_account_id,
+           origin = 'external',
+           source = excluded.source,
+           path = excluded.path,
+           first_user_turn = excluded.first_user_turn,
+           adopted_at = excluded.adopted_at,
+           synced_size = excluded.synced_size,
+           synced_mtime_ms = excluded.synced_mtime_ms",
+        params![
+            session_id,
+            link.provider_session_id,
+            link.harness,
+            link.provider_account_id,
+            link.source,
+            link.path,
+            link.first_user_turn,
+            link.adopted_at.unwrap_or_else(now_millis),
+            link.synced_size,
+            link.synced_mtime_ms,
         ],
     )?;
     Ok(())
@@ -2558,6 +2613,64 @@ mod tests {
 
         delete_session(&conn, "s1").unwrap();
         assert!(provider_session_ids(&conn).unwrap().is_empty());
+    }
+
+    #[test]
+    fn adoption_overrides_the_link_the_first_save_guessed() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let mut row = sample("s1", "/tmp/a", "Adopted");
+        row.provider_session_id = Some("ext-1".into());
+        row.provider_account_id = Some("default".into());
+        row.blocks = json!([
+            {"id":"u1","role":"user","text":"a"},
+            {"id":"u2","role":"user","text":"b"}
+        ]);
+        upsert_session(&store.conn.lock().unwrap(), &row).unwrap();
+        let link = store
+            .adopt_provider_link(
+                "s1",
+                &ProviderLink {
+                    provider_session_id: "ext-1".into(),
+                    harness: "claude".into(),
+                    provider_account_id: Some("default".into()),
+                    origin: "external".into(),
+                    source: Some("claude-desktop".into()),
+                    path: Some("/x/ext-1.jsonl".into()),
+                    first_user_turn: 0,
+                    created_at: 0,
+                    adopted_at: Some(5),
+                    handed_back_at: None,
+                    synced_size: Some(100),
+                    synced_mtime_ms: Some(7),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            (
+                link.origin.as_str(),
+                link.first_user_turn,
+                link.source.as_deref(),
+                link.adopted_at,
+                link.synced_size,
+                link.synced_mtime_ms,
+            ),
+            (
+                "external",
+                0,
+                Some("claude-desktop"),
+                Some(5),
+                Some(100),
+                Some(7)
+            )
+        );
+        // Later saves keep the adoption.
+        upsert_session(&store.conn.lock().unwrap(), &row).unwrap();
+        let links = get_session(&store.conn.lock().unwrap(), "s1")
+            .unwrap()
+            .unwrap()
+            .provider_links;
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].origin, "external");
     }
 
     #[test]

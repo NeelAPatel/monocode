@@ -1,6 +1,7 @@
 //! Conversations Claude and Codex started for a project outside MonoCode,
-//! listed so they can be read in place. Everything here only reads the
-//! providers' files.
+//! listed so they can be read in place, and adopted when the person chooses
+//! to continue one in MonoCode. Nothing here writes the providers' files;
+//! a continued chat is resumed through the provider's own CLI.
 
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader};
@@ -10,7 +11,7 @@ use serde::Serialize;
 use serde_json::Value;
 use tauri::State;
 
-use crate::session_store::SessionStore;
+use crate::session_store::{ProviderLink, SessionStore};
 
 const TITLE_CHARS: usize = 80;
 
@@ -51,16 +52,65 @@ pub fn list_external_sessions(
 /// dirs can be read, so the frontend cannot use this to open arbitrary paths.
 #[tauri::command(async)]
 pub fn read_external_session(provider: String, path: String) -> Result<Vec<Value>, String> {
-    let path = Path::new(&path);
+    let path = provider_transcript_path(&provider, Path::new(&path))?;
     match provider.as_str() {
+        "codex" => read_codex_records(&path),
+        _ => read_claude_records(&path),
+    }
+}
+
+/// Hand an external conversation to a MonoCode session that will continue
+/// it. The session must already be saved with this conversation as its
+/// provider session; this records where it came from and the transcript's
+/// current size, so later writes by the other client can be noticed.
+#[tauri::command(async)]
+pub fn adopt_external_session(
+    store: State<'_, SessionStore>,
+    session_id: String,
+    provider: String,
+    id: String,
+    path: String,
+    source: String,
+) -> Result<ProviderLink, String> {
+    let path = provider_transcript_path(&provider, Path::new(&path))?;
+    let size = std::fs::metadata(&path)
+        .map_err(|error| error.to_string())?
+        .len();
+    store.adopt_provider_link(
+        &session_id,
+        &ProviderLink {
+            provider_session_id: id,
+            harness: provider,
+            provider_account_id: Some(DEFAULT_PROVIDER_ACCOUNT.into()),
+            origin: "external".into(),
+            source: Some(source).filter(|source| !source.trim().is_empty()),
+            path: Some(crate::fs::path_to_js(&path)),
+            first_user_turn: 0,
+            created_at: 0,
+            adopted_at: None,
+            handed_back_at: None,
+            synced_size: Some(size as i64),
+            synced_mtime_ms: Some(modified_ms(&path)),
+        },
+    )
+}
+
+/// External chats are read from the default provider dirs, so they only
+/// resume under the default account.
+const DEFAULT_PROVIDER_ACCOUNT: &str = "default";
+
+fn provider_transcript_path(provider: &str, path: &Path) -> Result<PathBuf, String> {
+    match provider {
         "claude" => {
             let root = crate::fs::default_claude_config_dir()?.join("projects");
-            read_claude_records(&checked_transcript_path(&[root], path)?)
+            checked_transcript_path(&[root], path)
         }
         "codex" => {
             let home = codex_home()?;
-            let roots = [home.join("sessions"), home.join("archived_sessions")];
-            read_codex_records(&checked_transcript_path(&roots, path)?)
+            checked_transcript_path(
+                &[home.join("sessions"), home.join("archived_sessions")],
+                path,
+            )
         }
         _ => Err("Unknown external session provider".into()),
     }

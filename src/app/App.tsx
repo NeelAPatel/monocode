@@ -133,7 +133,13 @@ import {
   type GitFileDiffKind,
   type GitHistoryCommit,
 } from "../platform/tauri/fs";
-import type { ExternalSession } from "../platform/tauri/fs";
+import {
+  linkAdoptedExternalSession,
+  readExternalSession,
+  type ExternalSession,
+} from "../platform/tauri/fs";
+import { adoptExternalSession } from "../features/sessions/model/externalAdopt";
+import type { ContinueExternal } from "../features/sessions/ui/ExternalTranscriptView";
 import { useExternalSessions } from "../features/sessions/hooks/useExternalSessions";
 import {
   invalidateProjectFiles,
@@ -445,6 +451,7 @@ import {
   persistFingerprint,
   rebaseProjectSessions,
   replaceInFlightSessions,
+  sanitizeProviderLinks,
   saveWorkspaceSnapshot,
   setSessionArchived,
   setSessionLinkedWorkItem,
@@ -5649,6 +5656,7 @@ export default function App({
         id: session.id,
         path: session.path,
         source: session.source,
+        cwd: session.cwd,
       });
       setTabs((prev) =>
         prev.map((entry) =>
@@ -5658,6 +5666,86 @@ export default function App({
       setComposerFocused(false);
     },
     [activeTabId],
+  );
+
+  const adoptingExternal = useRef(new Set<string>());
+  const onContinueExternal = useCallback<ContinueExternal>(
+    async (external, title) => {
+      if (adoptingExternal.current.has(external.id)) return;
+      const projectCwd = sidebarCwdRef.current;
+      const label = HARNESS_LABEL[external.provider];
+      const confirmed = await ask(
+        `Continue “${title}” in MonoCode?\n\nYour next message resumes this ${label} chat, so it is added to the chat's history in ${label} too. Using the chat in both places at the same time can mix up its turns.`,
+        {
+          title: "Continue in MonoCode",
+          kind: "info",
+          okLabel: "Continue",
+          cancelLabel: "Cancel",
+        },
+      );
+      if (!confirmed) return;
+      adoptingExternal.current.add(external.id);
+      try {
+        const records = await readExternalSession(
+          external.provider,
+          external.path,
+        );
+        const adoption = adoptExternalSession({
+          external: { ...external, title },
+          records,
+          projectCwd,
+          runtimeMode: sessionsRef.current[0]?.runtimeMode,
+        });
+        if ("blocked" in adoption) {
+          await message(adoption.blocked, { title: "MonoCode", kind: "info" });
+          return;
+        }
+        const { session } = adoption;
+        bindHarnessSession(
+          session.harness,
+          session.id,
+          external.id,
+          sessionWorkCwd(session),
+          session.providerAccountId,
+          session.blocks,
+        );
+        const summary = await upsertSession(session);
+        const link = await linkAdoptedExternalSession(session.id, external);
+        const adopted: Session = {
+          ...session,
+          providerLinks: sanitizeProviderLinks([link]),
+        };
+        lastPersisted.current.set(adopted.id, persistFingerprint(adopted));
+        lastBoundProvider.current.set(adopted.id, external.id);
+        const next = [...sessionsRef.current, adopted];
+        sessionsRef.current = next;
+        setSessions(next);
+        if (summary && summary.cwd === sidebarCwdRef.current) {
+          setHistory((current) => mergeProjectHistorySummary(current, summary));
+        }
+        await onSelectHistorySession(adopted.id);
+        // The chat lives on as the session; its read-only tab goes.
+        requestAnimationFrame(() => {
+          for (const tab of tabsRef.current) {
+            for (const pane of tab.editorPanes) {
+              const file = pane.files.find(
+                (entry) => entry.external?.id === external.id,
+              );
+              if (file) onCloseFile(pane.id, file.id);
+            }
+          }
+        });
+        externalSessions.refresh();
+      } catch (error) {
+        await message(`This chat could not be continued. ${String(error)}`, {
+          title: "MonoCode",
+          kind: "error",
+        });
+      } finally {
+        adoptingExternal.current.delete(external.id);
+      }
+    },
+    [externalSessions.refresh, onCloseFile, onSelectHistorySession],
   );
 
   const onPinFile = useCallback((fileId: string) => {
@@ -10491,6 +10579,7 @@ export default function App({
     onOpenDiff,
     onOpenPlan,
     onBuildPlan,
+    onContinueExternal,
     onSecondOpinion,
     onHandoff,
     onBtwSubmit,

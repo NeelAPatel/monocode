@@ -32,6 +32,12 @@ export function externalSourceLabel(
   return CODEX_SOURCE_LABEL[source] ?? (source.trim() || "Codex");
 }
 
+/** Adopt an external chat as a MonoCode session and open that instead. */
+export type ContinueExternal = (
+  external: ExternalTabSource,
+  title: string,
+) => Promise<void>;
+
 type Load =
   | { state: "loading" }
   | { state: "ready"; blocks: Block[] }
@@ -39,8 +45,8 @@ type Load =
 
 /**
  * A conversation another client wrote for this project, read from its own
- * file each time the tab opens. Read-only on purpose: MonoCode never resumes
- * or writes to a session it does not own, so there is no composer.
+ * file each time the tab opens. Read-only: MonoCode resumes a chat only after
+ * the person chooses to continue it, which turns it into a MonoCode session.
  */
 export function ExternalTranscriptView({
   title,
@@ -49,6 +55,7 @@ export function ExternalTranscriptView({
   visible,
   focused = visible,
   onOpenFile,
+  onContinue,
 }: {
   title: string;
   cwd: string;
@@ -56,8 +63,15 @@ export function ExternalTranscriptView({
   visible: boolean;
   focused?: boolean;
   onOpenFile?: (path: string) => void;
+  onContinue?: () => Promise<void>;
 }) {
   const [load, setLoad] = useState<Load>({ state: "loading" });
+  const [continuing, setContinuing] = useState(false);
+  const continueHere = useCallback(() => {
+    if (!onContinue) return;
+    setContinuing(true);
+    void onContinue().finally(() => setContinuing(false));
+  }, [onContinue]);
   useEffect(() => {
     let cancelled = false;
     setLoad({ state: "loading" });
@@ -131,7 +145,19 @@ export function ExternalTranscriptView({
         <span className="min-w-0 truncate" title={title}>
           {externalSourceLabel(external.provider, external.source)} · external
         </span>
-        <span className="ml-auto shrink-0">read-only</span>
+        {onContinue && load.state === "ready" ? (
+          <button
+            type="button"
+            disabled={continuing}
+            onClick={continueHere}
+            title="Continue this chat as a MonoCode session"
+            className="ml-auto shrink-0 rounded px-1.5 py-0.5 text-accent hover:bg-content/10 disabled:opacity-50"
+          >
+            {continuing ? "Continuing…" : "Continue in MonoCode"}
+          </button>
+        ) : (
+          <span className="ml-auto shrink-0">read-only</span>
+        )}
       </footer>
     </div>
   );

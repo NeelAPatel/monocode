@@ -62,6 +62,8 @@ export type ExternalTabSource = {
   path: string;
   /** Client that wrote it, e.g. `claude-desktop` or `Codex Desktop`. */
   source: string;
+  /** Folder it ran in, which continuing it requires. */
+  cwd: string;
 };
 
 export type SessionChangesSource = {

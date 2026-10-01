@@ -13,17 +13,25 @@ import { resolveModel } from "../../features/sessions/model/models";
 export type TranscriptSummary = { model?: string; effort?: string };
 
 /**
- * Turn provenance from the model id a provider wrote. A catalog entry gives
- * the display name; an id the catalog does not know is kept as written
- * rather than resolved to some other model.
+ * The catalog entry for a model id a provider wrote, or `undefined` when the
+ * catalog does not know it. Never resolves to some other model.
  */
+export function catalogModel(
+  harness: HarnessId,
+  nativeModel: string,
+): { id: string; name: string } | undefined {
+  const model = resolveModel(harness, nativeModel);
+  const native = model.nativeId ?? model.id.slice(model.id.indexOf(":") + 1);
+  return native === nativeModel || model.id === nativeModel ? model : undefined;
+}
+
+/** Turn provenance from the model id a provider wrote; unknown ids as is. */
 export function transcriptTurnModel(
   harness: HarnessId,
   nativeModel: string,
 ): TurnModel {
-  const model = resolveModel(harness, nativeModel);
-  const native = model.nativeId ?? model.id.slice(model.id.indexOf(":") + 1);
-  return native === nativeModel || model.id === nativeModel
+  const model = catalogModel(harness, nativeModel);
+  return model
     ? { harness, id: model.id, name: model.name }
     : { harness, id: nativeModel, name: nativeModel };
 }

@@ -119,6 +119,23 @@ export function readExternalSession(
   });
 }
 
+/**
+ * Record that a saved session continues this external conversation. The
+ * session must already be saved with it as its provider session.
+ */
+export function linkAdoptedExternalSession(
+  sessionId: string,
+  external: Pick<ExternalSession, "provider" | "id" | "path" | "source">,
+): Promise<unknown> {
+  return invoke<unknown>("adopt_external_session", {
+    sessionId,
+    provider: external.provider,
+    id: external.id,
+    path: external.path,
+    source: external.source,
+  });
+}
+
 export type FsEntry = {
   name: string;
   path: string;

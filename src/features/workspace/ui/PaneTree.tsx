@@ -29,6 +29,7 @@ import {
   type LayoutSash,
   type PaneEdge,
 } from "../model/layout";
+import type { ContinueExternal } from "../../sessions/ui/ExternalTranscriptView";
 import {
   sameProjectPath,
   type RecentProject,
@@ -152,6 +153,7 @@ type Shared = {
     blockId: string,
     target?: PlanBuildTarget,
   ) => void;
+  onContinueExternal?: ContinueExternal;
   onSecondOpinion?: (
     sessionId: string,
     target: ModelTarget,
@@ -260,6 +262,7 @@ function PaneTreeComponent({
   onOpenPlan,
   onUpdatePlan,
   onBuildPlan,
+  onContinueExternal,
   onSecondOpinion,
   onBtwSubmit,
   onBtwRetry,
@@ -451,6 +454,7 @@ function PaneTreeComponent({
                 onOpenFile={onOpenFile}
                 onUpdatePlan={onUpdatePlan}
                 onBuildPlan={onBuildPlan}
+                onContinueExternal={onContinueExternal}
                 editorNavigation={editorNavigation}
                 onPaneDragStart={onPaneDragStart}
                 onTerminalMetaChange={onTerminalMetaChange}

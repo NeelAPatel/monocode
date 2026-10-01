@@ -31,7 +31,10 @@ import {
   subscribeDiffViewer,
 } from "../../settings/model/settings";
 import { AgentTabView } from "../../sessions/ui/AgentTabView";
-import { ExternalTranscriptView } from "../../sessions/ui/ExternalTranscriptView";
+import {
+  ExternalTranscriptView,
+  type ContinueExternal,
+} from "../../sessions/ui/ExternalTranscriptView";
 import { MarkdownPreview } from "../../sessions/ui/AgentMarkdown";
 import { BinaryFileView } from "./BinaryFileView";
 import { ReleaseNotesSurface } from "../../../app/ui/ReleaseNotesSurface";
@@ -81,6 +84,7 @@ type Props = {
     blockId: string,
     target?: PlanBuildTarget,
   ) => void;
+  onContinueExternal?: ContinueExternal;
   editorNavigation?: EditorNavigationTarget | null;
   onPaneDragStart?: (event: ReactPointerEvent<HTMLElement>) => void;
   onTerminalMetaChange?: (fileId: string, patch: TerminalMetaPatch) => void;
@@ -104,6 +108,7 @@ function FilePaneComponent({
   onOpenFile,
   onUpdatePlan,
   onBuildPlan,
+  onContinueExternal,
   editorNavigation,
   onPaneDragStart,
   onTerminalMetaChange,
@@ -200,6 +205,11 @@ function FilePaneComponent({
                   visible={file.id === pane.activeFileId}
                   focused={focused && file.id === pane.activeFileId}
                   onOpenFile={onOpenFile}
+                  onContinue={
+                    onContinueExternal
+                      ? () => onContinueExternal(file.external, file.path)
+                      : undefined
+                  }
                 />
               ) : isPlanTab(file) ? (
                 <PlanSurface
@@ -269,6 +279,7 @@ export const FilePane = memo(FilePaneComponent, (previous, next) => {
     previous.onOpenFile !== next.onOpenFile ||
     previous.onUpdatePlan !== next.onUpdatePlan ||
     previous.onBuildPlan !== next.onBuildPlan ||
+    previous.onContinueExternal !== next.onContinueExternal ||
     previous.editorNavigation !== next.editorNavigation ||
     Boolean(previous.onPaneDragStart) !== Boolean(next.onPaneDragStart) ||
     previous.onTerminalMetaChange !== next.onTerminalMetaChange
