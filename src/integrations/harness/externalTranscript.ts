@@ -33,11 +33,27 @@ export function catalogModel(
   // The CLI can list a model under a moving alias (`haiku`) instead of its
   // versioned id; the same display name identifies the same version.
   const known = knownModel(harness, undated);
-  return known
+  const name = known?.name ?? derivedName(harness, undated);
+  return name
     ? modelsFor(harness).find(
-        (listed) => displayName(listed.name) === displayName(known.name),
+        (listed) => displayName(listed.name) === displayName(name),
       )
     : undefined;
+}
+
+/**
+ * A display name for a Claude id neither bundled list knows
+ * (`claude-sonnet-5-5` -> "Sonnet 5.5"), for matching the live list.
+ */
+function derivedName(harness: HarnessId, undated: string): string | undefined {
+  if (harness !== "claude") return undefined;
+  const match = /^claude-(opus|sonnet|haiku|fable)-(\d+)(?:-(\d+))?$/.exec(
+    undated,
+  );
+  if (!match) return undefined;
+  const [, family, major, minor] = match;
+  const label = family.charAt(0).toUpperCase() + family.slice(1);
+  return `${label} ${major}${minor ? `.${minor}` : ""}`;
 }
 
 function knownModel(harness: HarnessId, nativeId: string) {
@@ -58,12 +74,16 @@ export function transcriptTurnModel(
   harness: HarnessId,
   nativeModel: string,
 ): TurnModel {
+  const undated = nativeModel.replace(/-\d{8}$/, "");
   const model =
-    catalogModel(harness, nativeModel) ??
-    knownModel(harness, nativeModel.replace(/-\d{8}$/, ""));
+    catalogModel(harness, nativeModel) ?? knownModel(harness, undated);
   return model
     ? { harness, id: model.id, name: model.name }
-    : { harness, id: nativeModel, name: nativeModel };
+    : {
+        harness,
+        id: nativeModel,
+        name: derivedName(harness, undated) ?? nativeModel,
+      };
 }
 
 /** Tool output past this is cut; the transcript is for reading, not replay. */

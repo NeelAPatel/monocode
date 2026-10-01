@@ -47,4 +47,40 @@ describe("catalogModel", () => {
       transcriptTurnModel("claude", "claude-haiku-4-5-20251001").name,
     ).toBe("Haiku 4.5");
   });
+
+  it("finds an unbundled Claude id by the name derived from it", () => {
+    const sonnet = {
+      id: "claude:sonnet",
+      harness: "claude" as const,
+      name: "Sonnet 5.5",
+      nativeId: "sonnet",
+    };
+    setHarnessModels("claude", [sonnet]);
+    expect(catalogModel("claude", "claude-sonnet-5-5")).toMatchObject({
+      id: "claude:sonnet",
+    });
+  });
+
+  it("names an unlisted Claude id from its derived name, never another version", () => {
+    setHarnessModels("claude", [
+      {
+        id: "claude:sonnet",
+        harness: "claude",
+        name: "Sonnet 5",
+        nativeId: "sonnet",
+      },
+    ]);
+    expect(catalogModel("claude", "claude-sonnet-5-5")).toBeUndefined();
+    expect(transcriptTurnModel("claude", "claude-sonnet-5-5")).toMatchObject({
+      id: "claude-sonnet-5-5",
+      name: "Sonnet 5.5",
+    });
+  });
+
+  it("keeps unknown Codex ids as the provider wrote them", () => {
+    expect(transcriptTurnModel("codex", "gpt-unlisted-9")).toMatchObject({
+      id: "gpt-unlisted-9",
+      name: "GPT-Unlisted-9",
+    });
+  });
 });
