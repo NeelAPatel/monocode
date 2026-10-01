@@ -2941,14 +2941,14 @@ function ExternalSessionsGroup({
             {sessions.map((session) => (
               <li
                 key={`${session.provider}:${session.id}`}
-                className="group/external relative"
+                className="group/external flex min-w-0 items-center rounded-md hover:bg-content/10"
               >
                 <button
                   type="button"
                   data-tauri-drag-region="false"
                   title={`${session.title} — ${externalSourceLabel(session.provider, session.source)}, read-only`}
                   onClick={() => onOpen?.(session)}
-                  className="flex w-full min-w-0 items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-content/80 hover:bg-content/10 hover:text-content"
+                  className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-content/80 hover:text-content"
                 >
                   <HarnessIcon
                     harness={session.provider}
@@ -2958,7 +2958,7 @@ function ExternalSessionsGroup({
                     {session.title}
                   </span>
                   <span
-                    className={`shrink-0 text-[11px] tabular-nums text-content/45 ${onContinue ? "group-focus-within/external:invisible group-hover/external:invisible" : ""}`}
+                    className={`shrink-0 text-[11px] tabular-nums text-content/45 ${onContinue ? "group-focus-within/external:hidden group-hover/external:hidden" : ""}`}
                   >
                     {formatRelative(session.updatedAt, now)}
                   </span>
@@ -2970,7 +2970,7 @@ function ExternalSessionsGroup({
                     title="Continue in MonoCode"
                     aria-label={`Continue ${session.title} in MonoCode`}
                     onClick={() => onContinue(session)}
-                    className="pointer-events-none absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-accent opacity-0 hover:bg-content/10 group-focus-within/external:pointer-events-auto group-focus-within/external:opacity-100 group-hover/external:pointer-events-auto group-hover/external:opacity-100"
+                    className="mr-1 hidden shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-accent hover:bg-content/10 group-focus-within/external:flex group-hover/external:flex"
                   >
                     Continue in
                     <img
