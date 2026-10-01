@@ -25,6 +25,9 @@ pub struct ExternalSession {
     /// Epoch ms of the transcript's last write.
     pub updated_at: i64,
     pub path: String,
+    /// Where it ran: the project or a folder inside it. Resuming needs this
+    /// exact cwd, since Claude files transcripts by it.
+    pub cwd: String,
 }
 
 #[tauri::command(async)]
@@ -104,6 +107,8 @@ fn slim_claude_record(record: Value) -> Option<Value> {
         "isMeta",
         "origin",
         "apiBlockIndex",
+        "cwd",
+        "effort",
     ] {
         if let Some(value) = record.get(key) {
             slim.insert(key.into(), value.clone());
@@ -123,8 +128,43 @@ fn slim_claude_record(record: Value) -> Option<Value> {
         strip_image_data(&mut content);
         message.insert("content".into(), content);
     }
+    if let Some(usage) = record.pointer("/message/usage") {
+        let usage = pick_numbers(usage, &CLAUDE_USAGE_KEYS);
+        if !usage.is_empty() {
+            message.insert("usage".into(), Value::Object(usage));
+        }
+    }
     slim.insert("message".into(), Value::Object(message));
     Some(Value::Object(slim))
+}
+
+/// Token counts the turn metrics are built from; the rest of `usage` is
+/// server detail.
+const CLAUDE_USAGE_KEYS: [&str; 4] = [
+    "input_tokens",
+    "output_tokens",
+    "cache_read_input_tokens",
+    "cache_creation_input_tokens",
+];
+
+/// The listed keys of `value` that hold strings, nothing else.
+fn pick_strings(value: &Value, keys: &[&str]) -> serde_json::Map<String, Value> {
+    keys.iter()
+        .filter_map(|key| {
+            let text = value.get(*key).filter(|text| text.is_string())?;
+            Some(((*key).to_owned(), text.clone()))
+        })
+        .collect()
+}
+
+/// The listed keys of `value` that hold numbers, nothing else.
+fn pick_numbers(value: &Value, keys: &[&str]) -> serde_json::Map<String, Value> {
+    keys.iter()
+        .filter_map(|key| {
+            let number = value.get(*key).filter(|number| number.is_number())?;
+            Some(((*key).to_owned(), number.clone()))
+        })
+        .collect()
 }
 
 fn strip_image_data(value: &mut Value) {
@@ -212,6 +252,7 @@ fn list_claude_sessions(
                 source: summary.source,
                 updated_at,
                 path: crate::fs::path_to_js(&path),
+                cwd: summary.cwd,
                 id,
             })
         })
@@ -221,6 +262,7 @@ fn list_claude_sessions(
 struct TranscriptSummary {
     title: String,
     source: String,
+    cwd: String,
 }
 
 /// One streaming pass over a transcript: confirm it belongs to `cwd` and pick
@@ -228,6 +270,7 @@ struct TranscriptSummary {
 fn summarize_claude_transcript(path: &Path, cwd: &Path) -> Option<TranscriptSummary> {
     let file = std::fs::File::open(path).ok()?;
     let mut in_project = false;
+    let mut record_cwd = String::new();
     // Claude also keeps the current title beside the transcript; with it, the
     // scan can stop at the first prompt instead of reading to the end.
     let saved_title = claude_saved_title(path);
@@ -259,10 +302,14 @@ fn summarize_claude_transcript(path: &Path, cwd: &Path) -> Option<TranscriptSumm
             }
             Some("user") => {
                 if !in_project {
-                    in_project = record
+                    if let Some(at) = record
                         .get("cwd")
                         .and_then(Value::as_str)
-                        .is_some_and(|record_cwd| Path::new(record_cwd).starts_with(cwd));
+                        .filter(|at| Path::new(at).starts_with(cwd))
+                    {
+                        in_project = true;
+                        record_cwd = at.to_owned();
+                    }
                 }
                 if source.is_empty() {
                     if let Some(entrypoint) = record.get("entrypoint").and_then(Value::as_str) {
@@ -284,7 +331,11 @@ fn summarize_claude_transcript(path: &Path, cwd: &Path) -> Option<TranscriptSumm
         .or(custom_title)
         .filter(|title| title != "New session")
         .unwrap_or_else(|| clip(&prompt, TITLE_CHARS));
-    Some(TranscriptSummary { title, source })
+    Some(TranscriptSummary {
+        title,
+        source,
+        cwd: record_cwd,
+    })
 }
 
 fn claude_saved_title(transcript: &Path) -> Option<String> {
@@ -382,10 +433,8 @@ fn list_codex_sessions(home: &Path, cwd: &Path, owned: &HashSet<String>) -> Vec<
             let meta = codex_session_meta(&path)?;
             let id = meta.get("id").and_then(Value::as_str)?.to_owned();
             let originator = meta.get("originator").and_then(Value::as_str).unwrap_or("");
-            let in_project = meta
-                .get("cwd")
-                .and_then(Value::as_str)
-                .is_some_and(|thread_cwd| Path::new(thread_cwd).starts_with(cwd));
+            let thread_cwd = meta.get("cwd").and_then(Value::as_str).unwrap_or("");
+            let in_project = !thread_cwd.is_empty() && Path::new(thread_cwd).starts_with(cwd);
             if !in_project
                 || !is_top_level_codex_thread(&meta)
                 || is_monocode_originator(originator)
@@ -403,6 +452,7 @@ fn list_codex_sessions(home: &Path, cwd: &Path, owned: &HashSet<String>) -> Vec<
                 source: originator.to_owned(),
                 updated_at: modified_ms(&path),
                 path: crate::fs::path_to_js(&path),
+                cwd: thread_cwd.to_owned(),
                 id,
             })
         })
@@ -517,7 +567,11 @@ fn read_codex_records(path: &Path) -> Result<Vec<Value>, String> {
     Ok(BufReader::new(file)
         .lines()
         .map_while(Result::ok)
-        .filter(|line| line.contains("\"event_msg\"") || line.contains("\"compacted\""))
+        .filter(|line| {
+            line.contains("\"event_msg\"")
+                || line.contains("\"compacted\"")
+                || line.contains("\"turn_context\"")
+        })
         .filter_map(|line| serde_json::from_str::<Value>(&line).ok())
         .filter_map(slim_codex_record)
         .collect())
@@ -530,11 +584,42 @@ fn slim_codex_record(mut record: Value) -> Option<Value> {
         "compacted" => {
             return Some(serde_json::json!({"type": "compacted", "timestamp": timestamp}))
         }
+        // The model and effort each turn ran with.
+        "turn_context" => {
+            let payload = record.get("payload")?;
+            let mut slim = pick_strings(payload, &["turn_id", "model", "effort"]);
+            slim.insert("type".into(), "turn_context".into());
+            slim.insert("timestamp".into(), timestamp);
+            return Some(Value::Object(slim));
+        }
         "event_msg" => {}
         _ => return None,
     }
     let mut payload = record.get_mut("payload")?.take();
     match payload.get("type").and_then(Value::as_str)? {
+        // Turn boundaries and timing, for the turn footer.
+        kind @ ("task_started" | "task_complete") => {
+            let mut slim = pick_numbers(&payload, &["started_at", "completed_at", "duration_ms"]);
+            slim.extend(pick_strings(&payload, &["turn_id"]));
+            slim.insert("type".into(), kind.into());
+            slim.insert("timestamp".into(), timestamp);
+            Some(Value::Object(slim))
+        }
+        // The last request's token counts; the turn's last one is its metrics.
+        "token_count" => {
+            let last = pick_numbers(
+                payload.pointer("/info/last_token_usage")?,
+                &[
+                    "input_tokens",
+                    "cached_input_tokens",
+                    "cache_write_input_tokens",
+                    "output_tokens",
+                ],
+            );
+            (!last.is_empty()).then(
+                || serde_json::json!({"type": "token_count", "timestamp": timestamp, "last": last}),
+            )
+        }
         "item_completed" => {
             let mut item = payload.get_mut("item")?.take();
             let item_type = item.get("type").and_then(Value::as_str)?;
@@ -776,7 +861,10 @@ mod tests {
                         {"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}},
                         {"type":"text","text":"look"}]}}),
                 json!({"type":"assistant","uuid":"a1","apiBlockIndex":0,"requestId":"r",
-                    "message":{"id":"m1","role":"assistant","model":"claude","usage":{"input_tokens":1},
+                    "cwd":PROJECT,"effort":"high",
+                    "message":{"id":"m1","role":"assistant","model":"claude",
+                        "usage":{"input_tokens":1,"cache_read_input_tokens":5,"service_tier":"standard",
+                            "server_tool_use":{"web_search_requests":0}},
                         "content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"/x"}}]}}),
                 json!({"type":"user","uuid":"u2","toolUseResult":{"originalFile":"huge"},
                     "message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}),
@@ -789,12 +877,14 @@ mod tests {
         assert_eq!(
             records,
             [
-                json!({"type":"user","uuid":"u1","origin":{"kind":"human"},
+                json!({"type":"user","uuid":"u1","cwd":PROJECT,"origin":{"kind":"human"},
                     "message":{"role":"user","content":[
                         {"type":"image","source":{"type":"base64","media_type":"image/png"}},
                         {"type":"text","text":"look"}]}}),
                 json!({"type":"assistant","uuid":"a1","apiBlockIndex":0,
+                    "cwd":PROJECT,"effort":"high",
                     "message":{"id":"m1","role":"assistant","model":"claude",
+                        "usage":{"input_tokens":1,"cache_read_input_tokens":5},
                         "content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"/x"}}]}}),
                 json!({"type":"user","uuid":"u2","toolUseResult":true,
                     "message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}),
@@ -1079,6 +1169,74 @@ mod tests {
                 "aggregated_output":"ok","exit_code":0,"status":"completed"})
         );
         assert_eq!(records[2], json!({"type":"compacted","timestamp":"t"}));
+    }
+
+    #[test]
+    fn codex_reader_keeps_turn_timing_model_and_tokens() {
+        let home = tmp("codex-turns");
+        let path = write_rollout(
+            &home.0,
+            "sessions/2026/01/02",
+            "turns",
+            &[
+                session_meta("turns", PROJECT, "codex_cli_rs", json!("cli"), Some("user")),
+                json!({"timestamp":"t1","type":"event_msg","payload":{"type":"task_started",
+                    "turn_id":"turn-1","started_at":100,"model_context_window":1000,
+                    "collaboration_mode_kind":"default"}}),
+                json!({"timestamp":"t2","type":"turn_context","payload":{"turn_id":"turn-1",
+                    "model":"gpt-x","effort":"high","cwd":PROJECT,"current_date":"d",
+                    "sandbox_policy":{"type":"workspace-write"}}}),
+                user_item("hi"),
+                json!({"timestamp":"t3","type":"event_msg","payload":{"type":"token_count",
+                    "info":{"last_token_usage":{"input_tokens":10,"cached_input_tokens":4,
+                        "cache_write_input_tokens":0,"output_tokens":3,"reasoning_output_tokens":1,
+                        "total_tokens":13},"total_token_usage":{"input_tokens":99},
+                        "model_context_window":1000},"rate_limits":{"primary":{}}}}),
+                json!({"timestamp":"t4","type":"event_msg","payload":{"type":"task_complete",
+                    "turn_id":"turn-1","started_at":100,"completed_at":160,"duration_ms":60000,
+                    "time_to_first_token_ms":5,"last_agent_message":"done"}}),
+            ],
+        );
+        let records = read_codex_records(&path).unwrap();
+        assert_eq!(
+            records,
+            [
+                json!({"type":"task_started","timestamp":"t1","turn_id":"turn-1","started_at":100}),
+                json!({"type":"turn_context","timestamp":"t2","turn_id":"turn-1",
+                    "model":"gpt-x","effort":"high"}),
+                records[2].clone(),
+                json!({"type":"token_count","timestamp":"t3","last":{"input_tokens":10,
+                    "cached_input_tokens":4,"cache_write_input_tokens":0,"output_tokens":3}}),
+                json!({"type":"task_complete","timestamp":"t4","turn_id":"turn-1",
+                    "started_at":100,"completed_at":160,"duration_ms":60000}),
+            ]
+        );
+        assert_eq!(records[2]["item"]["type"], "UserMessage");
+    }
+
+    #[test]
+    fn listing_reports_the_cwd_each_chat_ran_in() {
+        let config = tmp("record-cwd");
+        write_transcript(&config.0, "sub", &[prompt("/work/demo-app/web", "hi")], "");
+        assert_eq!(list(&config.0, &[])[0].cwd, "/work/demo-app/web");
+        let home = tmp("codex-cwd");
+        write_rollout(
+            &home.0,
+            "sessions/2026/01/02",
+            "thread",
+            &[
+                session_meta(
+                    "thread",
+                    PROJECT,
+                    "codex_cli_rs",
+                    json!("cli"),
+                    Some("user"),
+                ),
+                user_item("hi"),
+            ],
+        );
+        let threads = list_codex_sessions(&home.0, Path::new(PROJECT), &HashSet::new());
+        assert_eq!(threads[0].cwd, PROJECT);
     }
 
     #[test]

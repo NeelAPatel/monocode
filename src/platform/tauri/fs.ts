@@ -100,6 +100,8 @@ export type ExternalSession = {
   source: string;
   updatedAt: number;
   path: string;
+  /** Where it ran: the project or a folder inside it. */
+  cwd: string;
 };
 
 export function listExternalSessions(cwd: string): Promise<ExternalSession[]> {
