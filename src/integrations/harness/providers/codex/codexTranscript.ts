@@ -1,6 +1,14 @@
-import type { Block } from "../../../../features/sessions/model/session";
+import type {
+  Block,
+  TurnMetrics,
+} from "../../../../features/sessions/model/session";
 import { asRecord, mapCodexNotification, stringField } from "./codexProtocol";
-import { clipToolDetail, recordStartedAt } from "../../externalTranscript";
+import {
+  clipToolDetail,
+  recordStartedAt,
+  transcriptTurnModel,
+  type TranscriptSummary,
+} from "../../externalTranscript";
 
 const COMPACTED_TEXT = "Context compacted";
 
@@ -9,6 +17,16 @@ const COMPACTED_TEXT = "Context compacted";
  * heads their own words with this line.
  */
 const TYPED_PROMPT_MARKER = "## My request:";
+
+/** One Codex turn, from `task_started` to `task_complete`. */
+type OpenTurn = {
+  turnId?: string;
+  model?: string;
+  metrics?: TurnMetrics;
+  durationMs?: number;
+  /** The prompt that opened it; a steer sent mid-turn does not replace it. */
+  user?: Block;
+};
 
 /**
  * Rebuild a read-only transcript from a Codex rollout written outside
@@ -20,18 +38,53 @@ export function codexTranscriptToBlocks(
   records: Record<string, unknown>[],
 ): Block[] {
   const blocks: Block[] = [];
+  let turn: OpenTurn | null = null;
+  const pushUser = (block: Block) => {
+    blocks.push(block);
+    if (turn?.turnId != null) {
+      turn.user ??= block;
+      return;
+    }
+    // Older rollouts have no task events; each prompt then opens a turn.
+    if (turn) closeTurn(turn);
+    turn = { user: block };
+  };
   records.forEach((rec, index) => {
     const type = stringField(rec, "type");
     const at = recordStartedAt(rec);
+    if (type === "task_started") {
+      if (turn) closeTurn(turn);
+      turn = { turnId: stringField(rec, "turn_id") };
+      return;
+    }
+    if (type === "turn_context") {
+      turn ??= { turnId: stringField(rec, "turn_id") };
+      turn.model = stringField(rec, "model") ?? turn.model;
+      return;
+    }
+    if (type === "token_count") {
+      if (turn) turn.metrics = tokenMetrics(rec.last) ?? turn.metrics;
+      return;
+    }
+    if (type === "task_complete") {
+      if (!turn) return;
+      if (typeof rec.duration_ms === "number")
+        turn.durationMs = rec.duration_ms;
+      closeTurn(turn);
+      turn = null;
+      return;
+    }
     if (type === "user_message" || type === "agent_message") {
       const text = stringField(rec, "message")?.trim();
       if (text) {
-        blocks.push({
+        const block: Block = {
           id: `${type}-${index}`,
           role: type === "user_message" ? "user" : "assistant",
           text,
           ...(type === "user_message" ? at : {}),
-        });
+        };
+        if (type === "user_message") pushUser(block);
+        else blocks.push(block);
       }
       return;
     }
@@ -45,7 +98,7 @@ export function codexTranscriptToBlocks(
     switch (stringField(item, "type")) {
       case "UserMessage": {
         const text = typedPrompt(contentText(item.content));
-        if (text) blocks.push({ id, role: "user", text, ...at });
+        if (text) pushUser({ id, role: "user", text, ...at });
         return;
       }
       case "AgentMessage": {
@@ -73,7 +126,51 @@ export function codexTranscriptToBlocks(
       }
     }
   });
+  if (turn) closeTurn(turn);
   return blocks;
+}
+
+/**
+ * Give the turn's prompt the footer fields a MonoCode turn has. The turn id
+ * is what `thread/rollback` needs to edit the last turn.
+ */
+function closeTurn(turn: OpenTurn): void {
+  const { user } = turn;
+  if (!user) return;
+  if (turn.turnId) user.providerTurnId = turn.turnId;
+  if (turn.durationMs != null) user.durationMs = turn.durationMs;
+  if (turn.model) user.turnModel = transcriptTurnModel("codex", turn.model);
+  if (turn.metrics) user.turnMetrics = turn.metrics;
+}
+
+/** The rollout's `last_token_usage`, mapped as the live session maps it. */
+function tokenMetrics(last: unknown): TurnMetrics | undefined {
+  const usage = asRecord(last);
+  if (!usage) return undefined;
+  const respelled: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(usage)) {
+    respelled[camelCase(key)] = value;
+  }
+  const { events } = mapCodexNotification("thread/tokenUsage/updated", {
+    tokenUsage: { last: respelled },
+  });
+  const event = events.find((entry) => entry.type === "turn.metrics");
+  if (!event || event.type !== "turn.metrics") return undefined;
+  const { type: _type, ...metrics } = event;
+  return metrics;
+}
+
+/** The model and effort the thread last ran with. */
+export function codexTranscriptSummary(
+  records: Record<string, unknown>[],
+): TranscriptSummary {
+  const summary: TranscriptSummary = {};
+  for (const rec of records) {
+    if (stringField(rec, "type") !== "turn_context") continue;
+    summary.model = stringField(rec, "model") ?? summary.model;
+    summary.effort = stringField(rec, "effort") ?? summary.effort;
+  }
+  return summary;
 }
 
 /**

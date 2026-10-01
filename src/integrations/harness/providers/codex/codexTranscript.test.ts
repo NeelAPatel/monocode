@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { codexTranscriptToBlocks, typedPrompt } from "./codexTranscript";
+import {
+  codexTranscriptSummary,
+  codexTranscriptToBlocks,
+  typedPrompt,
+} from "./codexTranscript";
 import { EXTERNAL_TOOL_DETAIL_LIMIT } from "../../externalTranscript";
 
 // Synthetic records shaped like a Codex rollout, trimmed by the host.
@@ -165,5 +169,92 @@ describe("codexTranscriptToBlocks", () => {
       ["user", "hi"],
       ["assistant", "hello"],
     ]);
+  });
+});
+
+describe("codexTranscriptToBlocks turn footer fields", () => {
+  const userItem = (id: string, text: string) =>
+    item({ type: "UserMessage", id, content: [{ type: "text", text }] });
+  const started = (turnId: string) => ({
+    type: "task_started",
+    turn_id: turnId,
+    started_at: 1,
+  });
+  const context = (turnId: string, model: string, effort = "medium") => ({
+    type: "turn_context",
+    turn_id: turnId,
+    model,
+    effort,
+  });
+  const tokens = (input: number, cached: number, output: number) => ({
+    type: "token_count",
+    last: {
+      input_tokens: input,
+      cached_input_tokens: cached,
+      cache_write_input_tokens: 0,
+      output_tokens: output,
+    },
+  });
+  const complete = (turnId: string, durationMs: number) => ({
+    type: "task_complete",
+    turn_id: turnId,
+    duration_ms: durationMs,
+  });
+
+  it("gives each prompt its turn id, duration, model and last token count", () => {
+    const blocks = codexTranscriptToBlocks([
+      started("t1"),
+      context("t1", "gpt-x"),
+      userItem("u1", "first"),
+      tokens(100, 20, 5),
+      tokens(200, 150, 9),
+      complete("t1", 4_000),
+      started("t2"),
+      context("t2", "gpt-y"),
+      userItem("u2", "second"),
+      // A steer mid-turn is its own message but not a new turn.
+      userItem("u3", "also this"),
+      complete("t2", 1_500),
+    ]);
+    const users = blocks.filter((block) => block.role === "user");
+    expect(
+      users.map(({ id, providerTurnId, durationMs }) => ({
+        id,
+        providerTurnId,
+        durationMs,
+      })),
+    ).toEqual([
+      { id: "u1", providerTurnId: "t1", durationMs: 4_000 },
+      { id: "u2", providerTurnId: "t2", durationMs: 1_500 },
+      { id: "u3", providerTurnId: undefined, durationMs: undefined },
+    ]);
+    expect(users[0].turnMetrics).toEqual({
+      inputTokens: 200,
+      outputTokens: 9,
+      cacheReadTokens: 150,
+      cacheHitPercent: 75,
+    });
+    expect(users[0].turnModel).toMatchObject({ harness: "codex", id: "gpt-x" });
+    expect(users[1].turnModel).toMatchObject({ id: "gpt-y" });
+  });
+
+  it("keeps an unfinished last turn's id and model but no duration", () => {
+    const [user] = codexTranscriptToBlocks([
+      started("t1"),
+      context("t1", "gpt-x"),
+      userItem("u1", "go"),
+    ]);
+    expect(user).toMatchObject({ providerTurnId: "t1" });
+    expect(user.turnModel).toMatchObject({ id: "gpt-x" });
+    expect(user.durationMs).toBeUndefined();
+  });
+
+  it("summarizes the last model and effort", () => {
+    expect(
+      codexTranscriptSummary([
+        context("t1", "gpt-x", "high"),
+        context("t2", "gpt-y", "low"),
+      ]),
+    ).toEqual({ model: "gpt-y", effort: "low" });
   });
 });

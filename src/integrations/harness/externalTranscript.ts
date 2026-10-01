@@ -3,6 +3,31 @@
  * (claudeTranscript, codexTranscript) for read-only viewing.
  */
 
+import type {
+  HarnessId,
+  TurnModel,
+} from "../../features/sessions/model/session";
+import { resolveModel } from "../../features/sessions/model/models";
+
+/** The model and effort a transcript last ran with, for continuing it. */
+export type TranscriptSummary = { model?: string; effort?: string };
+
+/**
+ * Turn provenance from the model id a provider wrote. A catalog entry gives
+ * the display name; an id the catalog does not know is kept as written
+ * rather than resolved to some other model.
+ */
+export function transcriptTurnModel(
+  harness: HarnessId,
+  nativeModel: string,
+): TurnModel {
+  const model = resolveModel(harness, nativeModel);
+  const native = model.nativeId ?? model.id.slice(model.id.indexOf(":") + 1);
+  return native === nativeModel || model.id === nativeModel
+    ? { harness, id: model.id, name: model.name }
+    : { harness, id: nativeModel, name: nativeModel };
+}
+
 /** Tool output past this is cut; the transcript is for reading, not replay. */
 export const EXTERNAL_TOOL_DETAIL_LIMIT = 20_000;
 

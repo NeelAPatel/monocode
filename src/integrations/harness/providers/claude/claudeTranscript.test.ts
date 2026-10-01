@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { claudePromptText, claudeTranscriptToBlocks } from "./claudeTranscript";
+import {
+  claudePromptText,
+  claudeTranscriptSummary,
+  claudeTranscriptToBlocks,
+} from "./claudeTranscript";
 import { EXTERNAL_TOOL_DETAIL_LIMIT } from "../../externalTranscript";
 
 // Synthetic records shaped like a Claude session file, trimmed by the host.
@@ -143,6 +147,107 @@ describe("claudeTranscriptToBlocks", () => {
         { type: "system", uuid: "y" },
       ]),
     ).toEqual([]);
+  });
+});
+
+describe("claudeTranscriptToBlocks turn footer fields", () => {
+  const at = (iso: string) => ({ timestamp: `2026-01-02T03:${iso}.000Z` });
+  const reply = (
+    uuid: string,
+    messageId: string,
+    usage: Record<string, unknown>,
+    extra: Record<string, unknown> = {},
+  ) => ({
+    type: "assistant",
+    uuid,
+    message: {
+      id: messageId,
+      role: "assistant",
+      model: "claude-opus-5-5",
+      usage,
+      content: [{ type: "text", text: uuid }],
+    },
+    ...extra,
+  });
+
+  it("times each turn from its prompt to its last record", () => {
+    const blocks = claudeTranscriptToBlocks([
+      prompt("u1", "first", at("00:00")),
+      reply("a1", "m1", {}, at("00:05")),
+      { ...toolResult("r1", "none", "ok"), ...at("00:30") },
+      // Idle time before the next prompt is not the agent's.
+      prompt("u2", "second", at("09:00")),
+      reply("a2", "m2", {}, at("09:02")),
+    ]);
+    const users = blocks.filter((block) => block.role === "user");
+    expect(users.map((block) => block.durationMs)).toEqual([30_000, 2_000]);
+  });
+
+  it("sums token usage once per API message and names the model", () => {
+    const [user] = claudeTranscriptToBlocks([
+      prompt("u1", "go"),
+      // Records of one message repeat its usage; the last one is final.
+      reply("a1", "m1", { input_tokens: 10, output_tokens: 1 }),
+      reply("a2", "m1", {
+        input_tokens: 10,
+        output_tokens: 7,
+        cache_read_input_tokens: 30,
+      }),
+      reply("a3", "m2", {
+        input_tokens: 5,
+        output_tokens: 2,
+        cache_creation_input_tokens: 5,
+      }),
+    ]);
+    expect(user.turnMetrics).toEqual({
+      inputTokens: 15,
+      outputTokens: 9,
+      cacheReadTokens: 30,
+      cacheWriteTokens: 5,
+      cacheHitPercent: 60,
+    });
+    expect(user.turnModel).toMatchObject({
+      harness: "claude",
+      id: "claude:opus-5-5",
+    });
+  });
+
+  it("keeps an unknown model id as written and skips synthetic replies", () => {
+    const [user] = claudeTranscriptToBlocks([
+      prompt("u1", "go"),
+      {
+        ...reply("a1", "m1", {}),
+        message: { id: "m1", model: "claude-future-9", content: [] },
+      },
+      {
+        ...reply("a2", "m2", {}),
+        message: { id: "m2", model: "<synthetic>", content: [] },
+      },
+    ]);
+    expect(user.turnModel).toEqual({
+      harness: "claude",
+      id: "claude-future-9",
+      name: "claude-future-9",
+    });
+  });
+
+  it("leaves a turn with no reply untimed", () => {
+    const [user] = claudeTranscriptToBlocks([prompt("u1", "go")]);
+    expect(user.durationMs).toBeUndefined();
+    expect(user.turnMetrics).toBeUndefined();
+  });
+
+  it("summarizes the last model and effort", () => {
+    expect(
+      claudeTranscriptSummary([
+        prompt("u1", "go"),
+        reply("a1", "m1", {}, { effort: "high" }),
+        {
+          ...reply("a2", "m2", {}, { effort: "low" }),
+          message: { id: "m2", model: "<synthetic>", content: [] },
+        },
+      ]),
+    ).toEqual({ model: "claude-opus-5-5", effort: "low" });
   });
 });
 
