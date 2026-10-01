@@ -120,6 +120,36 @@ describe("codexTranscriptToBlocks", () => {
     });
   });
 
+  it("reads a command stored as argv with parsed_cmd and a file:// cwd", () => {
+    const [block] = codexTranscriptToBlocks([
+      item({
+        type: "CommandExecution",
+        id: "exec-1",
+        command: [
+          "/usr/bin/zsh",
+          "-lc",
+          "pwd && rg --files -g 'fruits.txt' -g 'prices.csv'",
+        ],
+        cwd: "file:///home/neelpatel/LocalProj/continue-test",
+        parsed_cmd: [
+          {
+            type: "unknown",
+            cmd: "pwd && rg --files -g 'fruits.txt' -g 'prices.csv'",
+          },
+        ],
+        status: "completed",
+        aggregated_output:
+          "/home/neelpatel/LocalProj/continue-test\nprices.csv\nfruits.txt\n",
+        exit_code: 0,
+      }),
+    ]);
+    expect(block.tool?.title).toBe("Find files");
+    expect(block.tool?.preview).toMatchObject({
+      title: "pwd && rg --files -g 'fruits.txt' -g 'prices.csv'",
+    });
+    expect(block.tool?.detail).toContain("prices.csv");
+  });
+
   it("marks a compaction once and clips huge output", () => {
     const blocks = codexTranscriptToBlocks([
       item({ type: "ContextCompaction", id: "k1" }),

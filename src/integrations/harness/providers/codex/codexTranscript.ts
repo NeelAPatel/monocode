@@ -216,7 +216,37 @@ function appServerItem(
   const type = stringField(item, "type") ?? "";
   out.type = type.charAt(0).toLowerCase() + type.slice(1);
   if (type === "FileChange") out.changes = fileChanges(item.changes);
+  if (type === "CommandExecution") commandExecutionShape(out);
   return out;
+}
+
+/**
+ * Current rollouts store `command` as an argv array, `parsed_cmd` for the
+ * command actions, and `cwd` as a file URL; the live mapper wants a string,
+ * `commandActions`, and a path.
+ */
+function commandExecutionShape(out: Record<string, unknown>): void {
+  const { command, cwd } = out;
+  if (
+    Array.isArray(command) &&
+    command.every((part) => typeof part === "string")
+  ) {
+    const argv = command as string[];
+    out.command =
+      argv.length === 3 && (argv[1] === "-lc" || argv[1] === "-c")
+        ? argv[2]
+        : argv.join(" ");
+  }
+  if (!Array.isArray(out.commandActions) && Array.isArray(out.parsedCmd)) {
+    out.commandActions = out.parsedCmd;
+  }
+  if (typeof cwd === "string" && cwd.startsWith("file://")) {
+    try {
+      out.cwd = decodeURIComponent(new URL(cwd).pathname);
+    } catch {
+      // Keep the raw value when it is not a valid URL.
+    }
+  }
 }
 
 /** Rollouts key changes by path; the app-server lists `{path, diff}`. */
