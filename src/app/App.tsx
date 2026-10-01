@@ -5830,7 +5830,7 @@ export default function App({
     async (external, title) => {
       if (adoptingExternal.current.has(external.id)) return;
       const projectCwd = sidebarCwdRef.current;
-      const label = HARNESS_LABEL[external.provider];
+      const label = external.provider === "codex" ? "Codex" : "Claude";
       const confirmed = await ask(
         `Continue “${title}” in MonoCode?\n\nYour next message resumes this ${label} chat, so it is added to the chat's history in ${label} too. Using the chat in both places at the same time can mix up its turns.`,
         {

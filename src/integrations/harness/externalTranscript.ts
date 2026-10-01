@@ -7,7 +7,11 @@ import type {
   HarnessId,
   TurnModel,
 } from "../../features/sessions/model/session";
-import { resolveModel } from "../../features/sessions/model/models";
+import {
+  MODELS,
+  modelsFor,
+  resolveModel,
+} from "../../features/sessions/model/models";
 
 /** The model and effort a transcript last ran with, for continuing it. */
 export type TranscriptSummary = { model?: string; effort?: string };
@@ -25,7 +29,28 @@ export function catalogModel(
   const undated = nativeModel.replace(/-\d{8}$/, "");
   const model = resolveModel(harness, undated);
   const native = model.nativeId ?? model.id.slice(model.id.indexOf(":") + 1);
-  return native === undated || model.id === undated ? model : undefined;
+  if (native === undated || model.id === undated) return model;
+  // The CLI can list a model under a moving alias (`haiku`) instead of its
+  // versioned id; the same display name identifies the same version.
+  const known = knownModel(harness, undated);
+  return known
+    ? modelsFor(harness).find(
+        (listed) => displayName(listed.name) === displayName(known.name),
+      )
+    : undefined;
+}
+
+function knownModel(harness: HarnessId, nativeId: string) {
+  return MODELS.find(
+    (model) => model.harness === harness && model.nativeId === nativeId,
+  );
+}
+
+function displayName(name: string): string {
+  return name
+    .replace(/^claude\s+/i, "")
+    .trim()
+    .toLowerCase();
 }
 
 /** Turn provenance from the model id a provider wrote; unknown ids as is. */
@@ -33,7 +58,9 @@ export function transcriptTurnModel(
   harness: HarnessId,
   nativeModel: string,
 ): TurnModel {
-  const model = catalogModel(harness, nativeModel);
+  const model =
+    catalogModel(harness, nativeModel) ??
+    knownModel(harness, nativeModel.replace(/-\d{8}$/, ""));
   return model
     ? { harness, id: model.id, name: model.name }
     : { harness, id: nativeModel, name: nativeModel };
