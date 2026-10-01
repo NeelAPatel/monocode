@@ -20,6 +20,7 @@ import {
   ListFilter,
   PanelLeft,
   Pin,
+  RefreshCw,
   Plus,
   Search,
   Share,
@@ -234,6 +235,8 @@ type Props = {
   pending: boolean;
   /** Conversations other clients wrote for this project; read-only. */
   externalSessions?: readonly ExternalSession[];
+  externalSessionsRefreshing?: boolean;
+  onRefreshExternalSessions?: () => void;
   onOpenExternalSession?: (session: ExternalSession) => void;
   onSelectSession: (sessionId: string) => void;
   onSelectRemoteSession?: (project: string, sessionId: string) => void;
@@ -335,6 +338,8 @@ function SidebarComponent({
   status,
   pending,
   externalSessions = [],
+  externalSessionsRefreshing = false,
+  onRefreshExternalSessions,
   onOpenExternalSession,
   onSelectSession: onSelectLocalSession,
   onSelectRemoteSession,
@@ -2014,11 +2019,15 @@ function SidebarComponent({
                 <ExternalSessionsGroup
                   sessions={externalSessions}
                   expanded={externalSessionsExpanded}
+                  refreshing={externalSessionsRefreshing}
+                  onRefresh={onRefreshExternalSessions}
                   now={now}
                   onToggle={() => {
                     const expanded = !externalSessionsExpanded;
                     setExternalSessionsExpanded(expanded);
                     saveExternalSessionsExpanded(cwd, expanded);
+                    // Opening the group is when a stale list would be noticed.
+                    if (expanded) onRefreshExternalSessions?.();
                   }}
                   onOpen={onOpenExternalSession}
                 />
@@ -2871,30 +2880,56 @@ function FolderRow({
 function ExternalSessionsGroup({
   sessions,
   expanded,
+  refreshing,
   now,
   onToggle,
+  onRefresh,
   onOpen,
 }: {
   sessions: readonly ExternalSession[];
   expanded: boolean;
+  refreshing: boolean;
   now: number;
   onToggle: () => void;
+  onRefresh?: () => void;
   onOpen?: (session: ExternalSession) => void;
 }) {
   return (
     <div data-external-sessions className="px-1.5 pb-1.5">
       <div className="overflow-hidden rounded-md bg-content/5">
-        <FolderRow
-          folder={{ name: "External" }}
-          count={sessions.length}
-          expanded={expanded}
-          dropTarget={false}
-          busy={false}
-          done={false}
-          needsApproval={false}
-          groupIcon={<Eye className="size-3.5" strokeWidth={1.75} />}
-          onToggle={onToggle}
-        />
+        <div className="flex items-center">
+          <div className="min-w-0 flex-1">
+            <FolderRow
+              folder={{ name: "External" }}
+              count={sessions.length}
+              expanded={expanded}
+              dropTarget={false}
+              busy={false}
+              done={false}
+              needsApproval={false}
+              groupIcon={<Eye className="size-3.5" strokeWidth={1.75} />}
+              onToggle={onToggle}
+            />
+          </div>
+          {onRefresh ? (
+            <button
+              type="button"
+              data-external-refresh
+              data-tauri-drag-region="false"
+              title="Refresh external chats"
+              aria-label="Refresh external chats"
+              aria-busy={refreshing}
+              disabled={refreshing}
+              onClick={onRefresh}
+              className="mr-1 grid size-6 shrink-0 place-items-center rounded-md text-content/45 hover:bg-content/10 hover:text-content disabled:hover:bg-transparent"
+            >
+              <RefreshCw
+                className={`size-3.5 ${refreshing ? "animate-spin" : ""}`}
+                strokeWidth={1.75}
+              />
+            </button>
+          ) : null}
+        </div>
         {expanded ? (
           <ul className="flex flex-col gap-px p-1">
             {sessions.map((session) => (

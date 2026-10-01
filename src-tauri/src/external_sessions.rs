@@ -388,7 +388,7 @@ fn list_codex_sessions(home: &Path, cwd: &Path, owned: &HashSet<String>) -> Vec<
                 .is_some_and(|thread_cwd| Path::new(thread_cwd).starts_with(cwd));
             if !in_project
                 || !is_top_level_codex_thread(&meta)
-                || originator == "monocode"
+                || is_monocode_originator(originator)
                 || owned.contains(&id)
             {
                 return None;
@@ -407,6 +407,12 @@ fn list_codex_sessions(home: &Path, cwd: &Path, owned: &HashSet<String>) -> Vec<
             })
         })
         .collect()
+}
+
+/// MonoCode's own Codex clients: `monocode` for sessions, `monocode-text` for
+/// the background title and summary helpers.
+fn is_monocode_originator(originator: &str) -> bool {
+    originator == "monocode" || originator.starts_with("monocode-")
 }
 
 /// A thread a person started. Guardian reviews and spawned helpers carry
@@ -935,6 +941,21 @@ mod tests {
             &[
                 session_meta("ours", PROJECT, "monocode", desktop.clone(), Some("user")),
                 user_item("x"),
+            ],
+        );
+        write_rollout(
+            &home.0,
+            "sessions/2026/01/02",
+            "title-helper",
+            &[
+                session_meta(
+                    "title-helper",
+                    PROJECT,
+                    "monocode-text",
+                    desktop.clone(),
+                    None,
+                ),
+                user_item("Generate a title"),
             ],
         );
         write_rollout(

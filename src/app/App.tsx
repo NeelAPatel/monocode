@@ -10570,7 +10570,9 @@ export default function App({
               activeSessionId={active?.id}
               status={historyFailed ? "error" : "idle"}
               pending={historyPending}
-              externalSessions={externalSessions}
+              externalSessions={externalSessions.sessions}
+              externalSessionsRefreshing={externalSessions.refreshing}
+              onRefreshExternalSessions={externalSessions.refresh}
               onOpenExternalSession={onOpenExternalSession}
               onSelectSession={onSelectHistorySession}
               onSelectRemoteSession={onSelectRemoteSession}
