@@ -25,6 +25,7 @@ import type {
   HandoffStatus,
   InterjectionMeta,
   LinkedWorkItem,
+  ProviderLink,
   RuntimeMode,
   SecondOpinionMeta,
   Session,
@@ -84,6 +85,7 @@ type SessionRecord = {
   worktreeRemoved?: boolean;
   linkedWorkItem?: LinkedWorkItem | null;
   automationId?: string | null;
+  providerLinks?: unknown;
   createdAt: number;
   updatedAt: number;
 };
@@ -1055,6 +1057,7 @@ function recordToSession(record: SessionRecord): Session {
         .filter((block): block is Block => block != null)
     : [];
   const linkedWorkItem = sanitizeLinkedWorkItem(record.linkedWorkItem);
+  const providerLinks = sanitizeProviderLinks(record.providerLinks);
   return {
     id: record.id,
     cwd: record.cwd,
@@ -1087,8 +1090,45 @@ function recordToSession(record: SessionRecord): Session {
     ...(record.automationId && isPersistableId(record.automationId)
       ? { automationId: record.automationId }
       : {}),
+    ...(providerLinks.length > 0 ? { providerLinks } : {}),
     ...(contextFromRecord(record) ?? {}),
   };
+}
+
+export function sanitizeProviderLinks(value: unknown): ProviderLink[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry): ProviderLink[] => {
+    if (!entry || typeof entry !== "object") return [];
+    const row = entry as Record<string, unknown>;
+    if (
+      typeof row.providerSessionId !== "string" ||
+      typeof row.harness !== "string" ||
+      typeof row.firstUserTurn !== "number" ||
+      typeof row.createdAt !== "number"
+    ) {
+      return [];
+    }
+    const text = (key: string) =>
+      typeof row[key] === "string" ? { [key]: row[key] as string } : {};
+    const number = (key: string) =>
+      typeof row[key] === "number" ? { [key]: row[key] as number } : {};
+    return [
+      {
+        providerSessionId: row.providerSessionId,
+        harness: asHarness(row.harness),
+        origin: row.origin === "external" ? "external" : "monocode",
+        firstUserTurn: row.firstUserTurn,
+        createdAt: row.createdAt,
+        ...text("providerAccountId"),
+        ...text("source"),
+        ...text("path"),
+        ...number("adoptedAt"),
+        ...number("handedBackAt"),
+        ...number("syncedSize"),
+        ...number("syncedMtimeMs"),
+      },
+    ];
+  });
 }
 
 /**

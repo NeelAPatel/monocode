@@ -86,11 +86,15 @@ impl SessionStore {
     }
 }
 
+/// Current ids and every earlier one, so a conversation left behind by a
+/// provider switch is still MonoCode's and stays out of the External list.
 fn provider_session_ids(conn: &Connection) -> Result<HashSet<String>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT provider_session_id FROM sessions
-             WHERE provider_session_id IS NOT NULL AND provider_session_id != ''",
+             WHERE provider_session_id IS NOT NULL AND provider_session_id != ''
+             UNION
+             SELECT provider_session_id FROM session_provider_links",
         )
         .map_err(|e| e.to_string())?;
     let ids = stmt
@@ -224,8 +228,42 @@ pub struct SessionRecord {
     pub linked_work_item: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub automation_id: Option<String>,
+    /// Every provider conversation this session has run on, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_links: Vec<ProviderLink>,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+/// One provider conversation a session ran on. A provider switch starts a new
+/// one, so a session collects a link per conversation. `origin` is
+/// `external` when the conversation began in another client and was adopted.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderLink {
+    pub provider_session_id: String,
+    pub harness: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_account_id: Option<String>,
+    pub origin: String,
+    /// Client that started an external conversation, e.g. `claude-desktop`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// The provider's transcript file, for external conversations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// Index of the first user turn that ran on this conversation.
+    pub first_user_turn: i64,
+    pub created_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adopted_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handed_back_at: Option<i64>,
+    /// Transcript size and mtime when MonoCode last caught up with it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub synced_size: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub synced_mtime_ms: Option<i64>,
 }
 
 #[tauri::command(async)]
@@ -983,7 +1021,107 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     crate::reminders::ensure_table(conn)?;
     crate::automations::ensure_tables(conn)?;
     ensure_orchestration_history(conn)?;
+    ensure_provider_links(conn)?;
     Ok(())
+}
+
+fn ensure_provider_links(conn: &Connection) -> rusqlite::Result<()> {
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master
+                       WHERE type = 'table' AND name = 'session_provider_links')",
+        [],
+        |row| row.get(0),
+    )?;
+    if exists {
+        return Ok(());
+    }
+    // Seed with each session's current conversation; earlier ones from
+    // before this table existed are not recoverable.
+    conn.execute_batch(
+        "CREATE TABLE session_provider_links (
+           session_id TEXT NOT NULL,
+           provider_session_id TEXT NOT NULL,
+           harness TEXT NOT NULL,
+           provider_account_id TEXT,
+           origin TEXT NOT NULL DEFAULT 'monocode',
+           source TEXT,
+           path TEXT,
+           first_user_turn INTEGER NOT NULL DEFAULT 0,
+           created_at INTEGER NOT NULL,
+           adopted_at INTEGER,
+           handed_back_at INTEGER,
+           synced_size INTEGER,
+           synced_mtime_ms INTEGER,
+           PRIMARY KEY (session_id, provider_session_id)
+         );
+         INSERT OR IGNORE INTO session_provider_links
+           (session_id, provider_session_id, harness, provider_account_id, created_at)
+         SELECT id, provider_session_id, harness, provider_account_id, created_at
+         FROM sessions
+         WHERE provider_session_id IS NOT NULL AND provider_session_id != '';",
+    )
+}
+
+/// Record the conversation a session is on now. Its first turn is the latest
+/// user turn: a new conversation starts when a turn is sent to it.
+fn link_current_provider(
+    conn: &Connection,
+    session: &SessionUpsert,
+    provider_session_id: &str,
+    provider_account_id: Option<&str>,
+    now: i64,
+) -> rusqlite::Result<()> {
+    let user_turns = session.blocks.as_array().map_or(0, |blocks| {
+        blocks
+            .iter()
+            .filter(|block| block.get("role").and_then(Value::as_str) == Some("user"))
+            .count()
+    });
+    conn.execute(
+        "INSERT OR IGNORE INTO session_provider_links
+           (session_id, provider_session_id, harness, provider_account_id,
+            first_user_turn, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            session.id,
+            provider_session_id,
+            session.harness,
+            provider_account_id,
+            user_turns.saturating_sub(1) as i64,
+            now,
+        ],
+    )?;
+    Ok(())
+}
+
+fn provider_links(conn: &Connection, session_id: &str) -> rusqlite::Result<Vec<ProviderLink>> {
+    let mut statement = conn.prepare(
+        "SELECT provider_session_id, harness, provider_account_id, origin, source, path,
+                first_user_turn, created_at, adopted_at, handed_back_at,
+                synced_size, synced_mtime_ms
+         FROM session_provider_links
+         WHERE session_id = ?1
+         ORDER BY first_user_turn ASC, created_at ASC, rowid ASC",
+    )?;
+    let links = statement
+        .query_map([session_id], |row| {
+            Ok(ProviderLink {
+                provider_session_id: row.get(0)?,
+                harness: row.get(1)?,
+                provider_account_id: row.get(2)?,
+                origin: row.get(3)?,
+                source: row.get(4)?,
+                path: row.get(5)?,
+                first_user_turn: row.get(6)?,
+                created_at: row.get(7)?,
+                adopted_at: row.get(8)?,
+                handed_back_at: row.get(9)?,
+                synced_size: row.get(10)?,
+                synced_mtime_ms: row.get(11)?,
+            })
+        })?
+        .collect();
+    links
 }
 
 fn ensure_orchestration_history(conn: &Connection) -> rusqlite::Result<()> {
@@ -1241,6 +1379,9 @@ fn upsert_session(conn: &Connection, session: &SessionUpsert) -> rusqlite::Resul
     )?;
 
     remember_worker_from_blocks(conn, &session.id, &session.blocks)?;
+    if let Some(provider_session_id) = provider_session_id {
+        link_current_provider(conn, session, provider_session_id, provider_account_id, now)?;
+    }
     Ok(SessionSummary {
         id: session.id.clone(),
         orchestration_lead_id: worker_parent(conn, &session.id)?,
@@ -1828,6 +1969,10 @@ fn delete_session(conn: &Connection, session_id: &str) -> rusqlite::Result<()> {
         "DELETE FROM orchestration_workers WHERE session_id = ?1 OR lead_id = ?1",
         [session_id],
     )?;
+    tx.execute(
+        "DELETE FROM session_provider_links WHERE session_id = ?1",
+        [session_id],
+    )?;
     tx.execute("DELETE FROM sessions WHERE id = ?1", [session_id])?;
     tx.commit()
 }
@@ -1910,6 +2055,7 @@ fn get_session(conn: &Connection, session_id: &str) -> rusqlite::Result<Option<S
                 linked_work_item: optional_json(row.get(15)?),
                 provider_account_id: row.get(16)?,
                 automation_id: nonempty(row.get(18)?),
+                provider_links: provider_links(conn, session_id)?,
                 created_at: row.get(9)?,
                 updated_at: row.get(10)?,
             })
@@ -2359,6 +2505,98 @@ mod tests {
         let stored = get_session(&conn, "s1").unwrap().unwrap();
         assert_eq!(stored.context_used, Some(29_821));
         assert_eq!(stored.context_window, Some(1_000_000));
+    }
+
+    #[test]
+    fn provider_switches_keep_every_conversation_owned() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.conn.lock().unwrap();
+        let mut row = sample("s1", "/tmp/a", "Switch");
+        row.harness = "claude".into();
+        row.provider_session_id = Some("claude-1".into());
+        row.blocks = json!([{"id":"u1","role":"user","text":"a"}]);
+        upsert_session(&conn, &row).unwrap();
+        // Later saves of the same conversation do not move its first turn.
+        row.blocks = json!([
+            {"id":"u1","role":"user","text":"a"},
+            {"id":"u2","role":"user","text":"b"}
+        ]);
+        upsert_session(&conn, &row).unwrap();
+        // A switch to Codex: the third turn starts a new conversation.
+        row.harness = "codex".into();
+        row.provider_session_id = Some("codex-1".into());
+        row.provider_account_id = Some("work".into());
+        row.blocks = json!([
+            {"id":"u1","role":"user","text":"a"},
+            {"id":"u2","role":"user","text":"b"},
+            {"id":"a2","role":"assistant","text":"ok"},
+            {"id":"u3","role":"user","text":"c"}
+        ]);
+        upsert_session(&conn, &row).unwrap();
+
+        let links = get_session(&conn, "s1").unwrap().unwrap().provider_links;
+        assert_eq!(
+            links
+                .iter()
+                .map(|link| (
+                    link.provider_session_id.as_str(),
+                    link.harness.as_str(),
+                    link.provider_account_id.as_deref(),
+                    link.origin.as_str(),
+                    link.first_user_turn,
+                ))
+                .collect::<Vec<_>>(),
+            [
+                ("claude-1", "claude", None, "monocode", 0),
+                ("codex-1", "codex", Some("work"), "monocode", 2),
+            ]
+        );
+        assert_eq!(
+            provider_session_ids(&conn).unwrap(),
+            HashSet::from(["claude-1".to_owned(), "codex-1".to_owned()])
+        );
+
+        delete_session(&conn, "s1").unwrap();
+        assert!(provider_session_ids(&conn).unwrap().is_empty());
+    }
+
+    #[test]
+    fn provider_links_seed_from_existing_sessions_once() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        conn.execute("DROP TABLE session_provider_links", [])
+            .unwrap();
+        let mut row = sample("s1", "/tmp/a", "Old");
+        row.provider_session_id = Some("old-1".into());
+        upsert_session_without_links(&conn, &row);
+        migrate(&conn).unwrap();
+        assert_eq!(
+            provider_links(&conn, "s1")
+                .unwrap()
+                .iter()
+                .map(|link| link.provider_session_id.as_str())
+                .collect::<Vec<_>>(),
+            ["old-1"]
+        );
+    }
+
+    /// A row saved by a build without the links table.
+    fn upsert_session_without_links(conn: &Connection, row: &SessionUpsert) {
+        conn.execute(
+            "INSERT INTO sessions (id, cwd, harness, model, model_settings, runtime_mode,
+               title, provider_session_id, blocks_json, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, '{}', ?5, ?6, ?7, '[]', 1, 1)",
+            params![
+                row.id,
+                row.cwd,
+                row.harness,
+                row.model,
+                row.runtime_mode,
+                row.title,
+                row.provider_session_id
+            ],
+        )
+        .unwrap();
     }
 
     #[test]

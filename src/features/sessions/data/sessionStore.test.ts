@@ -10,6 +10,7 @@ import {
   backfillClaudeShellCommands,
   isPersistableId,
   persistFingerprint,
+  sanitizeProviderLinks,
   sanitizeSessionForPersist,
   shouldPersistSession,
 } from "./sessionStore";
@@ -756,5 +757,57 @@ it("saves the exact CI context alongside the compact user message", () => {
     role: "user",
     text: "Fix 1 failed CI check for acme/web PR #42.",
     ciContext: context,
+  });
+});
+
+describe("sanitizeProviderLinks", () => {
+  it("keeps well-formed links and drops malformed ones", () => {
+    expect(
+      sanitizeProviderLinks([
+        {
+          providerSessionId: "c1",
+          harness: "claude",
+          origin: "external",
+          source: "claude-desktop",
+          path: "/home/me/.claude/projects/x/c1.jsonl",
+          firstUserTurn: 0,
+          createdAt: 1,
+          adoptedAt: 2,
+          syncedSize: 10,
+          syncedMtimeMs: 3,
+          handedBackAt: null,
+        },
+        {
+          providerSessionId: "x1",
+          harness: "codex",
+          origin: "weird",
+          firstUserTurn: 2,
+          createdAt: 5,
+        },
+        { providerSessionId: 7, harness: "codex" },
+        null,
+      ]),
+    ).toEqual([
+      {
+        providerSessionId: "c1",
+        harness: "claude",
+        origin: "external",
+        source: "claude-desktop",
+        path: "/home/me/.claude/projects/x/c1.jsonl",
+        firstUserTurn: 0,
+        createdAt: 1,
+        adoptedAt: 2,
+        syncedSize: 10,
+        syncedMtimeMs: 3,
+      },
+      {
+        providerSessionId: "x1",
+        harness: "codex",
+        origin: "monocode",
+        firstUserTurn: 2,
+        createdAt: 5,
+      },
+    ]);
+    expect(sanitizeProviderLinks(undefined)).toEqual([]);
   });
 });

@@ -269,6 +269,29 @@ export type UsageLimit = {
   resumeAtReset?: boolean;
 };
 
+/**
+ * One provider conversation a session ran on. A provider switch starts a new
+ * one. `external` marks a conversation adopted from another client.
+ */
+export type ProviderLink = {
+  providerSessionId: string;
+  harness: HarnessId;
+  providerAccountId?: string;
+  origin: "monocode" | "external";
+  /** Client that started an external conversation, e.g. `claude-desktop`. */
+  source?: string;
+  /** The provider's transcript file, for external conversations. */
+  path?: string;
+  /** Index of the first user turn that ran on this conversation. */
+  firstUserTurn: number;
+  createdAt: number;
+  adoptedAt?: number;
+  handedBackAt?: number;
+  /** Transcript size and mtime when MonoCode last caught up with it. */
+  syncedSize?: number;
+  syncedMtimeMs?: number;
+};
+
 /** Provider/model provenance captured when a user turn is submitted. */
 export type TurnModel = {
   harness: HarnessId;
@@ -453,6 +476,11 @@ export type Session = {
   linkedWorkItem?: LinkedWorkItem;
   /** Automation that created or last launched this session. */
   automationId?: string;
+  /**
+   * Every provider conversation this session ran on, oldest first. The store
+   * records them on save; loaded sessions carry them read-only.
+   */
+  providerLinks?: ProviderLink[];
   /** New linked-item activity shown above the composer. In-memory, one-shot. */
   linkedWorkItemUpdateCard?: LinkedWorkItemUpdateCard;
   /** Note chip shown above the composer. In-memory, one-shot. */
