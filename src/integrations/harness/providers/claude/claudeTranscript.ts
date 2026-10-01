@@ -33,10 +33,14 @@ const USAGE_KEYS = [
   "cache_creation_input_tokens",
 ] as const;
 
+const COMPACTED_TEXT = "Context compacted";
+
 /** One prompt and everything after it, until the next prompt. */
 type OpenTurn = {
   user: Block;
   lastAt?: number;
+  /** Claude's own measure of the turn, when it wrote one. */
+  durationMs?: number;
   model?: string;
   /** Per API message; its records repeat the usage, the last one is final. */
   usage: Map<string, Record<string, unknown>>;
@@ -77,7 +81,28 @@ export function claudeTranscriptToBlocks(
       }
       continue;
     }
+    if (type === "system") {
+      if (
+        turn &&
+        stringField(rec, "subtype") === "turn_duration" &&
+        typeof rec.durationMs === "number"
+      ) {
+        turn.durationMs = rec.durationMs;
+      }
+      continue;
+    }
     if (type !== "user") continue;
+    if (rec.isCompactSummary === true) {
+      // The summary that replaces the history is model-facing.
+      if (blocks[blocks.length - 1]?.text !== COMPACTED_TEXT) {
+        blocks.push({
+          id: stringField(rec, "uuid") ?? `compacted-${index}`,
+          role: "system",
+          text: COMPACTED_TEXT,
+        });
+      }
+      continue;
+    }
     for (const result of toolResultsFromUserMessage(rec)) {
       const tool = tools.get(result.toolUseId);
       if (!tool?.block.tool) continue;
@@ -127,7 +152,9 @@ function noteRecord(
  */
 function closeTurn(turn: OpenTurn): void {
   const { user } = turn;
-  if (user.startedAt != null && turn.lastAt != null) {
+  if (turn.durationMs != null) {
+    user.durationMs = turn.durationMs;
+  } else if (user.startedAt != null && turn.lastAt != null) {
     user.durationMs = Math.max(0, turn.lastAt - user.startedAt);
   }
   if (turn.model) user.turnModel = transcriptTurnModel("claude", turn.model);
@@ -216,12 +243,14 @@ export function claudePromptText(rec: Record<string, unknown>): string | null {
     stringField(rec, "type") !== "user" ||
     rec.isMeta === true ||
     rec.isSidechain === true ||
+    rec.isCompactSummary === true ||
     rec.toolUseResult !== undefined
   ) {
     return null;
   }
   const originKind = stringField(asRecord(rec.origin), "kind");
   if (originKind && originKind !== "human") return null;
+  const human = originKind === "human";
   const content = asRecord(rec.message)?.content;
   let text = "";
   let images = 0;
@@ -240,12 +269,31 @@ export function claudePromptText(rec: Record<string, unknown>): string | null {
     text = parts.join("\n");
   }
   text = text.trim();
-  if (text.startsWith(INTERRUPT_PREFIX)) return null;
-  if (images) {
+  if (text.startsWith(INTERRUPT_PREFIX) || text.includes("<local-command-")) {
+    return null;
+  }
+  // A slash command, skill, or plugin skill reads as the person typed it.
+  // Built-in commands such as `/compact` echo the same tags without a human
+  // origin, alongside the bare command, and are not prompts.
+  const command = tagText(text, "command-name");
+  if (command != null) {
+    if (!human) return null;
+    text = `${command} ${tagText(text, "command-args") ?? ""}`.trim();
+  } else if (!human && /^\/\S+$/.test(text)) {
+    return null;
+  }
+  // The TUI writes an `[Image #n]` placeholder for each; note them only
+  // when nothing in the text does.
+  if (images && !text.includes("[Image")) {
     const note = images === 1 ? "[image]" : `[${images} images]`;
     text = text ? `${note}\n${text}` : note;
   }
   return text || null;
+}
+
+function tagText(text: string, tag: string): string | null {
+  const match = new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`).exec(text);
+  return match ? match[1].trim() : null;
 }
 
 function blockIndex(rec: Record<string, unknown>): number {

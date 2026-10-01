@@ -97,7 +97,7 @@ export function codexTranscriptToBlocks(
     const id = stringField(item, "id") ?? `item-${index}`;
     switch (stringField(item, "type")) {
       case "UserMessage": {
-        const text = typedPrompt(contentText(item.content));
+        const text = userMessageText(item.content);
         if (text) pushUser({ id, role: "user", text, ...at });
         return;
       }
@@ -262,6 +262,24 @@ function pushCompacted(blocks: Block[], index: number): void {
     role: "system",
     text: COMPACTED_TEXT,
   });
+}
+
+/**
+ * What the person sent. Attached images are `local_image`/`image` parts;
+ * the TUI already writes an `[Image #n]` placeholder into the text for each,
+ * so a note is added only when nothing else marks them.
+ */
+function userMessageText(content: unknown): string {
+  const text = typedPrompt(contentText(content));
+  const images = Array.isArray(content)
+    ? content.filter((part) => {
+        const kind = stringField(asRecord(part), "type");
+        return kind === "local_image" || kind === "image";
+      }).length
+    : 0;
+  if (!images || text.includes("[Image")) return text;
+  const note = images === 1 ? "[image]" : `[${images} images]`;
+  return text ? `${note}\n${text}` : note;
 }
 
 export function typedPrompt(text: string): string {

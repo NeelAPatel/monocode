@@ -20,9 +20,12 @@ export function catalogModel(
   harness: HarnessId,
   nativeModel: string,
 ): { id: string; name: string } | undefined {
-  const model = resolveModel(harness, nativeModel);
+  // Claude writes dated snapshots (`claude-haiku-4-5-20251001`) of the ids
+  // the catalog lists undated.
+  const undated = nativeModel.replace(/-\d{8}$/, "");
+  const model = resolveModel(harness, undated);
   const native = model.nativeId ?? model.id.slice(model.id.indexOf(":") + 1);
-  return native === nativeModel || model.id === nativeModel ? model : undefined;
+  return native === undated || model.id === undated ? model : undefined;
 }
 
 /** Turn provenance from the model id a provider wrote; unknown ids as is. */

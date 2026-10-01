@@ -20,6 +20,7 @@ const CLAUDE_SOURCE_LABEL: Record<string, string> = {
 
 const CODEX_SOURCE_LABEL: Record<string, string> = {
   codex_cli_rs: "Codex CLI",
+  "codex-tui": "Codex CLI",
   codex_exec: "Codex CLI",
 };
 

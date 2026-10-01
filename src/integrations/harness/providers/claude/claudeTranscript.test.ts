@@ -291,3 +291,106 @@ describe("claudePromptText", () => {
     ).toBeNull();
   });
 });
+
+describe("claudeTranscriptToBlocks commands and compaction", () => {
+  const typed = (uuid: string, content: unknown) =>
+    prompt(uuid, content, { origin: { kind: "human" } });
+  const local = (uuid: string, content: unknown, extra = {}) => ({
+    type: "user",
+    uuid,
+    message: { role: "user", content },
+    ...extra,
+  });
+
+  it("shows slash commands, skills, and plugin skills as typed", () => {
+    const users = claudeTranscriptToBlocks([
+      typed(
+        "u1",
+        "<command-message>fruit-count</command-message>\n<command-name>/fruit-count</command-name>",
+      ),
+      typed(
+        "u2",
+        "<command-message>design:design</command-message>\n<command-name>/design:design</command-name>\n<command-args>Reply ready.</command-args>",
+      ),
+    ]).filter((block) => block.role === "user");
+    expect(users.map((block) => block.text)).toEqual([
+      "/fruit-count",
+      "/design:design Reply ready.",
+    ]);
+  });
+
+  it("turns /compact into one marker instead of four prompts", () => {
+    const blocks = claudeTranscriptToBlocks([
+      typed("u1", "before"),
+      local("c1", "/compact"),
+      local(
+        "c2",
+        "This session is being continued from a previous conversation.",
+        {
+          isCompactSummary: true,
+        },
+      ),
+      local(
+        "c3",
+        "<command-name>/compact</command-name>\n<command-message>compact</command-message>",
+      ),
+      local("c4", "<local-command-stdout>Compacted</local-command-stdout>"),
+      typed("u2", "after"),
+    ]);
+    expect(blocks.map((block) => [block.role, block.text])).toEqual([
+      ["user", "before"],
+      ["system", "Context compacted"],
+      ["user", "after"],
+    ]);
+  });
+
+  it("prefers Claude's own turn duration over the timestamp span", () => {
+    const [user] = claudeTranscriptToBlocks([
+      prompt("u1", "go", { timestamp: "2026-01-02T03:00:00.000Z" }),
+      {
+        type: "assistant",
+        uuid: "a1",
+        timestamp: "2026-01-02T03:00:09.000Z",
+        message: { id: "m1", content: [{ type: "text", text: "ok" }] },
+      },
+      {
+        type: "system",
+        subtype: "turn_duration",
+        durationMs: 7_250,
+        timestamp: "2026-01-02T03:00:10.000Z",
+      },
+    ]);
+    expect(user.durationMs).toBe(7_250);
+  });
+});
+
+describe("claudeTranscriptToBlocks model ids and image placeholders", () => {
+  it("names dated model snapshots by their catalog entry", () => {
+    const [user] = claudeTranscriptToBlocks([
+      prompt("u1", "go"),
+      {
+        type: "assistant",
+        uuid: "a1",
+        message: {
+          id: "m1",
+          model: "claude-opus-5-5-20260101",
+          content: [{ type: "text", text: "ok" }],
+        },
+      },
+    ]);
+    expect(user.turnModel).toMatchObject({ id: "claude:opus-5-5" });
+  });
+
+  it("keeps the TUI's image placeholders without a second note", () => {
+    const image = { type: "image", source: { type: "base64" } };
+    expect(
+      claudePromptText(
+        prompt("u1", [
+          { type: "text", text: "[Image #1] [Image #2] colors?" },
+          image,
+          image,
+        ]),
+      ),
+    ).toBe("[Image #1] [Image #2] colors?");
+  });
+});

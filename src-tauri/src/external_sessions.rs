@@ -398,6 +398,19 @@ fn read_claude_records_from(path: &Path, offset: u64) -> Result<Vec<Value>, Stri
 /// kept; inline image bytes are dropped for the same reason.
 fn slim_claude_record(record: Value) -> Option<Value> {
     let kind = record.get("type").and_then(Value::as_str)?;
+    // How long the agent worked on the turn, as Claude measured it.
+    if kind == "system"
+        && record.get("subtype").and_then(Value::as_str) == Some("turn_duration")
+        && record.get("isSidechain").and_then(Value::as_bool) != Some(true)
+    {
+        let duration = record.get("durationMs").filter(|value| value.is_number())?;
+        return Some(serde_json::json!({
+            "type": "system",
+            "subtype": "turn_duration",
+            "durationMs": duration,
+            "timestamp": record.get("timestamp").cloned().unwrap_or(Value::Null),
+        }));
+    }
     if (kind != "user" && kind != "assistant")
         || record.get("uuid").is_none()
         || record.get("isSidechain").and_then(Value::as_bool) == Some(true)
@@ -415,6 +428,7 @@ fn slim_claude_record(record: Value) -> Option<Value> {
         "apiBlockIndex",
         "cwd",
         "effort",
+        "isCompactSummary",
     ] {
         if let Some(value) = record.get(key) {
             slim.insert(key.into(), value.clone());
@@ -662,15 +676,16 @@ pub(crate) fn claude_prompt_text(record: &Value) -> Option<String> {
     if record.get("type").and_then(Value::as_str) != Some("user")
         || record.get("isMeta").and_then(Value::as_bool) == Some(true)
         || record.get("isSidechain").and_then(Value::as_bool) == Some(true)
+        || record.get("isCompactSummary").and_then(Value::as_bool) == Some(true)
         || record.get("toolUseResult").is_some()
     {
         return None;
     }
-    if let Some(kind) = record.pointer("/origin/kind").and_then(Value::as_str) {
-        if kind != "human" {
-            return None;
-        }
-    }
+    let human = match record.pointer("/origin/kind").and_then(Value::as_str) {
+        Some(kind) if kind != "human" => return None,
+        Some(_) => true,
+        None => false,
+    };
     let text = match record.pointer("/message/content")? {
         Value::String(text) => text.clone(),
         Value::Array(blocks) => {
@@ -690,7 +705,34 @@ pub(crate) fn claude_prompt_text(record: &Value) -> Option<String> {
         _ => return None,
     };
     let text = text.trim();
-    (!text.is_empty() && !text.starts_with(CLAUDE_INTERRUPT_PREFIX)).then(|| text.to_owned())
+    if text.is_empty()
+        || text.starts_with(CLAUDE_INTERRUPT_PREFIX)
+        || text.contains("<local-command-")
+    {
+        return None;
+    }
+    // A slash command, skill, or plugin skill: the person typed `/name args`.
+    // Built-in commands such as `/compact` echo the same tags without a human
+    // origin, alongside the bare command, and are not prompts.
+    if let Some(name) = tag_text(text, "command-name") {
+        if !human {
+            return None;
+        }
+        let args = tag_text(text, "command-args").unwrap_or_default();
+        return Some(format!("{name} {args}").trim().to_owned());
+    }
+    if !human && text.starts_with('/') && !text.contains(char::is_whitespace) {
+        return None;
+    }
+    Some(text.to_owned())
+}
+
+/// The trimmed text of the first `<tag>…</tag>` in `text`.
+fn tag_text(text: &str, tag: &str) -> Option<String> {
+    let open = format!("<{tag}>");
+    let start = text.find(&open)? + open.len();
+    let end = start + text[start..].find(&format!("</{tag}>"))?;
+    Some(text[start..end].trim().to_owned())
 }
 
 fn codex_home() -> Result<PathBuf, String> {
@@ -1271,6 +1313,72 @@ mod tests {
         assert!(spawned_by_us(std::process::id()));
         assert!(process_alive(std::process::id(), None));
         assert!(!process_alive(std::process::id(), Some("not-a-start-time")));
+    }
+
+    #[test]
+    fn commands_read_as_typed_and_local_command_echoes_are_not_prompts() {
+        let user = |content: &str, origin: Option<&str>| {
+            let mut record = json!({"type":"user","message":{"content":content}});
+            if let Some(kind) = origin {
+                record["origin"] = json!({"kind": kind});
+            }
+            claude_prompt_text(&record)
+        };
+        assert_eq!(
+            user(
+                "<command-message>fruit-count</command-message>\n<command-name>/fruit-count</command-name>",
+                Some("human")
+            )
+            .as_deref(),
+            Some("/fruit-count")
+        );
+        assert_eq!(
+            user(
+                "<command-message>x:y</command-message>\n<command-name>/x:y</command-name>\n<command-args>do it</command-args>",
+                Some("human")
+            )
+            .as_deref(),
+            Some("/x:y do it")
+        );
+        assert_eq!(user("/compact", None), None);
+        assert_eq!(
+            user(
+                "<command-name>/compact</command-name>\n<command-message>compact</command-message>",
+                None
+            ),
+            None
+        );
+        assert_eq!(
+            user(
+                "<local-command-stdout>Compacted</local-command-stdout>",
+                None
+            ),
+            None
+        );
+        // Older transcripts have no origin at all; their prompts still count.
+        assert_eq!(user("fix the bug", None).as_deref(), Some("fix the bug"));
+        let summary = json!({"type":"user","isCompactSummary":true,"message":{"content":"This session is being continued"}});
+        assert_eq!(claude_prompt_text(&summary), None);
+    }
+
+    #[test]
+    fn reader_keeps_turn_durations_and_compact_summaries() {
+        let records: Vec<Value> = [
+            json!({"type":"system","subtype":"turn_duration","durationMs":1234,"uuid":"d1",
+                "timestamp":"t","messageCount":4,"cwd":PROJECT}),
+            json!({"type":"system","subtype":"stop_hook_summary","uuid":"h1"}),
+            json!({"type":"user","uuid":"c1","isCompactSummary":true,"message":{"content":"summary"}}),
+        ]
+        .into_iter()
+        .filter_map(slim_claude_record)
+        .collect();
+        assert_eq!(
+            records,
+            [
+                json!({"type":"system","subtype":"turn_duration","durationMs":1234,"timestamp":"t"}),
+                json!({"type":"user","uuid":"c1","isCompactSummary":true,"message":{"content":"summary"}}),
+            ]
+        );
     }
 
     #[test]

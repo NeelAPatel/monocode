@@ -151,7 +151,8 @@ describe("codexTranscriptToBlocks", () => {
         ],
       }),
     ]);
-    expect(block.text).toBe("fix the header");
+    // The attached image is noted, as Claude chats note theirs.
+    expect(block.text).toBe("[image]\nfix the header");
     expect(typedPrompt("plain prompt")).toBe("plain prompt");
   });
 
@@ -256,5 +257,45 @@ describe("codexTranscriptToBlocks turn footer fields", () => {
         context("t2", "gpt-y", "low"),
       ]),
     ).toEqual({ model: "gpt-y", effort: "low" });
+  });
+});
+
+describe("codexTranscriptToBlocks attached images", () => {
+  const user = (content: unknown[]) =>
+    codexTranscriptToBlocks([
+      item({ type: "UserMessage", id: "u1", content }),
+    ])[0];
+
+  it("notes images sent without text", () => {
+    expect(
+      user([
+        { type: "local_image", path: "images/red.png" },
+        { type: "local_image", path: "images/blue.png" },
+      ]),
+    ).toMatchObject({ role: "user", text: "[2 images]" });
+  });
+
+  it("keeps the TUI's own placeholders and adds a note otherwise", () => {
+    expect(
+      user([
+        { type: "local_image", path: "/p/blue.png" },
+        { type: "text", text: "[Image #1]  notes.md  What day?" },
+      ]).text,
+    ).toBe("[Image #1]  notes.md  What day?");
+    expect(
+      user([
+        { type: "image", image_url: "data:" },
+        { type: "text", text: "what is this?" },
+      ]).text,
+    ).toBe("[image]\nwhat is this?");
+  });
+
+  it("reads a skill invocation as typed", () => {
+    expect(
+      user([
+        { type: "text", text: "$fruit-facts  give me the fact." },
+        { type: "skill", name: "fruit-facts", path: "/p/SKILL.md" },
+      ]).text,
+    ).toBe("$fruit-facts  give me the fact.");
   });
 });
