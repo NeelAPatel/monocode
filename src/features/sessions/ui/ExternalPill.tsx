@@ -11,6 +11,7 @@ import {
 } from "../model/providerLineage";
 import {
   HARNESS_LABEL,
+  HARNESS_TITLE,
   type HarnessId,
   type ProviderLink,
 } from "../model/session";
@@ -105,7 +106,7 @@ function LineageDetails({
         <Row label="Continued here">{formatWhen(adopted.adoptedAt)}</Row>
       ) : null}
       <Row label="Providers">
-        {lineage.chain.map((harness) => HARNESS_LABEL[harness]).join(" → ")}
+        {lineage.chain.map((harness) => HARNESS_TITLE[harness]).join(" → ")}
       </Row>
       <Row label="Now">
         {handedBack
@@ -171,7 +172,7 @@ function lineageSummary(lineage: ExternalLineage): string {
   }
   if (lineage.chain.length > 1) {
     parts.push(
-      lineage.chain.map((harness) => HARNESS_LABEL[harness]).join(" → "),
+      lineage.chain.map((harness) => HARNESS_TITLE[harness]).join(" → "),
     );
   }
   if (lineage.handedBack) {
