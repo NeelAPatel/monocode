@@ -87,6 +87,28 @@ impl SessionStore {
             .ok_or_else(|| "Adopted conversation was not recorded".into())
     }
 
+    /// Record that MonoCode has caught up with an adopted transcript.
+    pub(crate) fn mark_provider_link_synced(
+        &self,
+        session_id: &str,
+        provider_session_id: &str,
+        size: i64,
+        mtime_ms: i64,
+    ) -> Result<ProviderLink, String> {
+        let conn = self.lock_conn()?;
+        conn.execute(
+            "UPDATE session_provider_links SET synced_size = ?3, synced_mtime_ms = ?4
+             WHERE session_id = ?1 AND provider_session_id = ?2",
+            params![session_id, provider_session_id, size, mtime_ms],
+        )
+        .map_err(|e| e.to_string())?;
+        provider_links(&conn, session_id)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|link| link.provider_session_id == provider_session_id)
+            .ok_or_else(|| "This conversation is not linked to the session".into())
+    }
+
     /// Provider conversation ids MonoCode already owns, archived ones included.
     pub(crate) fn provider_session_ids(&self) -> Result<HashSet<String>, String> {
         // The query-only connection keeps this off the writer's lock; tests

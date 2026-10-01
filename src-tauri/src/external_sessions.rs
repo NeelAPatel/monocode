@@ -116,6 +116,78 @@ fn provider_transcript_path(provider: &str, path: &Path) -> Result<PathBuf, Stri
     }
 }
 
+/// A reader positioned at `offset`, a size this transcript had after a whole
+/// record was written, so it starts on a line boundary.
+fn transcript_from(path: &Path, offset: u64) -> Result<BufReader<std::fs::File>, String> {
+    use std::io::{Seek, SeekFrom};
+    let mut file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+    file.seek(SeekFrom::Start(offset))
+        .map_err(|error| error.to_string())?;
+    Ok(BufReader::new(file))
+}
+
+/// What another client appended to a transcript since MonoCode last caught
+/// up with it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalTail {
+    pub records: Vec<Value>,
+    pub size: i64,
+    pub mtime_ms: i64,
+    /// The file is shorter than it was: it was rewritten, and `records` holds
+    /// all of it rather than an appended tail.
+    pub rewritten: bool,
+}
+
+/// Records written after `offset` bytes, for catching up with turns another
+/// client added to a chat MonoCode continues.
+#[tauri::command(async)]
+pub fn read_external_session_since(
+    provider: String,
+    path: String,
+    offset: i64,
+) -> Result<ExternalTail, String> {
+    let path = provider_transcript_path(&provider, Path::new(&path))?;
+    let size = std::fs::metadata(&path)
+        .map_err(|error| error.to_string())?
+        .len();
+    let offset = u64::try_from(offset).unwrap_or(0);
+    let rewritten = size < offset;
+    let from = if rewritten { 0 } else { offset };
+    let records = match provider.as_str() {
+        "codex" => read_codex_records_from(&path, from)?,
+        _ => read_claude_records_from(&path, from)?,
+    };
+    Ok(ExternalTail {
+        records,
+        size: size as i64,
+        mtime_ms: modified_ms(&path),
+        rewritten,
+    })
+}
+
+/// Note that MonoCode is caught up with an adopted transcript at `size`.
+#[tauri::command(async)]
+pub fn session_mark_external_synced(
+    store: State<'_, SessionStore>,
+    session_id: String,
+    provider_session_id: String,
+    size: i64,
+    mtime_ms: i64,
+) -> Result<ProviderLink, String> {
+    store.mark_provider_link_synced(&session_id, &provider_session_id, size, mtime_ms)
+}
+
+/// The size and mtime of an adopted transcript right now.
+#[tauri::command(async)]
+pub fn external_session_stat(provider: String, path: String) -> Result<(i64, i64), String> {
+    let path = provider_transcript_path(&provider, Path::new(&path))?;
+    let size = std::fs::metadata(&path)
+        .map_err(|error| error.to_string())?
+        .len();
+    Ok((size as i64, modified_ms(&path)))
+}
+
 fn checked_transcript_path(roots: &[PathBuf], path: &Path) -> Result<PathBuf, String> {
     let path = path.canonicalize().map_err(|error| error.to_string())?;
     let inside = roots
@@ -128,8 +200,11 @@ fn checked_transcript_path(roots: &[PathBuf], path: &Path) -> Result<PathBuf, St
 }
 
 fn read_claude_records(path: &Path) -> Result<Vec<Value>, String> {
-    let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
-    Ok(BufReader::new(file)
+    read_claude_records_from(path, 0)
+}
+
+fn read_claude_records_from(path: &Path, offset: u64) -> Result<Vec<Value>, String> {
+    Ok(transcript_from(path, offset)?
         .lines()
         .map_while(Result::ok)
         .filter_map(|line| serde_json::from_str::<Value>(&line).ok())
@@ -613,8 +688,11 @@ const CODEX_ITEM_TYPES: [&str; 8] = [
 ];
 
 fn read_codex_records(path: &Path) -> Result<Vec<Value>, String> {
-    let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
-    Ok(BufReader::new(file)
+    read_codex_records_from(path, 0)
+}
+
+fn read_codex_records_from(path: &Path, offset: u64) -> Result<Vec<Value>, String> {
+    Ok(transcript_from(path, offset)?
         .lines()
         .map_while(Result::ok)
         .filter(|line| {
@@ -940,6 +1018,28 @@ mod tests {
                     "message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}),
             ]
         );
+    }
+
+    #[test]
+    fn tail_reader_starts_at_the_offset() {
+        let config = tmp("tail");
+        let mut first = prompt(PROJECT, "one");
+        first["uuid"] = json!("u1");
+        write_transcript(&config.0, "chat", &[first], "");
+        let path = config.0.join("projects/-work-demo-app/chat.jsonl");
+        let synced = std::fs::metadata(&path).unwrap().len();
+        let mut body = std::fs::read_to_string(&path).unwrap();
+        body.push_str(
+            &json!({"type":"user","uuid":"u2","cwd":PROJECT,
+            "origin":{"kind":"human"},"message":{"content":"two"}})
+            .to_string(),
+        );
+        body.push('\n');
+        std::fs::write(&path, body).unwrap();
+        let tail = read_claude_records_from(&path, synced).unwrap();
+        assert_eq!(tail.len(), 1);
+        assert_eq!(tail[0]["uuid"], "u2");
+        assert_eq!(read_claude_records_from(&path, 0).unwrap().len(), 2);
     }
 
     #[test]

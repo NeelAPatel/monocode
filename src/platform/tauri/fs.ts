@@ -136,6 +136,52 @@ export function linkAdoptedExternalSession(
   });
 }
 
+/** What another client appended to a transcript since `offset` bytes. */
+export type ExternalTail = {
+  records: Record<string, unknown>[];
+  size: number;
+  mtimeMs: number;
+  /** The file shrank, so `records` is the whole transcript. */
+  rewritten: boolean;
+};
+
+export function readExternalSessionSince(
+  provider: ExternalProvider,
+  path: string,
+  offset: number,
+): Promise<ExternalTail> {
+  return invoke<ExternalTail>("read_external_session_since", {
+    provider,
+    path,
+    offset,
+  });
+}
+
+export function externalSessionStat(
+  provider: ExternalProvider,
+  path: string,
+): Promise<{ size: number; mtimeMs: number }> {
+  return invoke<[number, number]>("external_session_stat", {
+    provider,
+    path,
+  }).then(([size, mtimeMs]) => ({ size, mtimeMs }));
+}
+
+/** Note that MonoCode is caught up with an adopted transcript. */
+export function markExternalSessionSynced(
+  sessionId: string,
+  providerSessionId: string,
+  size: number,
+  mtimeMs: number,
+): Promise<unknown> {
+  return invoke<unknown>("session_mark_external_synced", {
+    sessionId,
+    providerSessionId,
+    size,
+    mtimeMs,
+  });
+}
+
 export type FsEntry = {
   name: string;
   path: string;

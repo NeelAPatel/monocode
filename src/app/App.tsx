@@ -134,10 +134,19 @@ import {
   type GitHistoryCommit,
 } from "../platform/tauri/fs";
 import {
+  externalSessionStat,
   linkAdoptedExternalSession,
+  markExternalSessionSynced,
   readExternalSession,
+  readExternalSessionSince,
   type ExternalSession,
 } from "../platform/tauri/fs";
+import {
+  adoptedLink,
+  mergeForeignTurns,
+} from "../features/sessions/model/externalSync";
+import { claudeTranscriptToBlocks } from "../integrations/harness/providers/claude/claudeTranscript";
+import { codexTranscriptToBlocks } from "../integrations/harness/providers/codex/codexTranscript";
 import { adoptExternalSession } from "../features/sessions/model/externalAdopt";
 import type { ContinueExternal } from "../features/sessions/ui/ExternalTranscriptView";
 import { useExternalSessions } from "../features/sessions/hooks/useExternalSessions";
@@ -718,6 +727,8 @@ type SubmitOptions = ComposerTurnOptions & {
   refreshTitle?: boolean;
   /** Internal guard for the retry after resolving a renamed project. */
   projectLocationReady?: boolean;
+  /** Internal guard for the retry after catching up an adopted chat. */
+  externalSynced?: boolean;
 };
 
 type Submit = (
@@ -1662,6 +1673,115 @@ export default function App({
   activeSessionIdRef.current = activeSessionId;
 
   useInputNotifications(sessions, activeSessionId);
+
+  const replaceProviderLink = useCallback(
+    (sessionId: string, stored: unknown, blocks?: Block[]) => {
+      const [link] = sanitizeProviderLinks([stored]);
+      if (!link) return;
+      const next = sessionsRef.current.map((session) =>
+        session.id === sessionId
+          ? {
+              ...session,
+              ...(blocks ? { blocks } : {}),
+              providerLinks: (session.providerLinks ?? []).map((entry) =>
+                entry.providerSessionId === link.providerSessionId
+                  ? link
+                  : entry,
+              ),
+            }
+          : session,
+      );
+      sessionsRef.current = next;
+      setSessions(next);
+    },
+    [],
+  );
+
+  // Another client may add turns to a chat MonoCode adopted. Catch up from
+  // its transcript, and drop the provider process so the next turn resumes
+  // from the file instead of a history that no longer matches it.
+  const externalSyncs = useRef(new Map<string, Promise<number>>());
+  const syncAdoptedSession = useCallback(
+    (sessionId: string): Promise<number> => {
+      const running = externalSyncs.current.get(sessionId);
+      if (running) return running;
+      const sync = (async () => {
+        const session = sessionsRef.current.find(
+          (entry) => entry.id === sessionId,
+        );
+        const link = session && adoptedLink(session);
+        if (!session || !link || session.busy) return 0;
+        const tail = await readExternalSessionSince(
+          link.harness,
+          link.path,
+          link.syncedSize ?? 0,
+        );
+        if (!tail.rewritten && tail.size === link.syncedSize) return 0;
+        const latest = sessionsRef.current.find(
+          (entry) => entry.id === sessionId,
+        );
+        if (!latest || latest.busy) return 0;
+        const merge = mergeForeignTurns(
+          latest.blocks,
+          link.harness === "codex"
+            ? codexTranscriptToBlocks(tail.records)
+            : claudeTranscriptToBlocks(tail.records),
+          { rewritten: tail.rewritten },
+        );
+        const changed = merge.blocks !== latest.blocks;
+        if (changed) await stopHarnessSession(latest.harness, latest.id);
+        const stored = await markExternalSessionSynced(
+          sessionId,
+          link.providerSessionId,
+          tail.size,
+          tail.mtimeMs,
+        );
+        replaceProviderLink(
+          sessionId,
+          stored,
+          changed ? merge.blocks : undefined,
+        );
+        return merge.added;
+      })().finally(() => externalSyncs.current.delete(sessionId));
+      externalSyncs.current.set(sessionId, sync);
+      return sync;
+    },
+    [replaceProviderLink],
+  );
+
+  useEffect(() => {
+    if (!activeSessionId) return;
+    const check = () => {
+      void syncAdoptedSession(activeSessionId).catch(() => undefined);
+    };
+    check();
+    window.addEventListener("focus", check);
+    return () => window.removeEventListener("focus", check);
+  }, [activeSessionId, syncAdoptedSession]);
+
+  // A finished MonoCode turn grew the transcript itself; move the marker past
+  // it so only later writes count as another client's.
+  const adoptedBusy = useRef(new Map<string, boolean>());
+  useEffect(() => {
+    for (const session of sessions) {
+      const link = adoptedLink(session);
+      if (!link) continue;
+      const wasBusy = adoptedBusy.current.get(session.id);
+      adoptedBusy.current.set(session.id, !!session.busy);
+      if (!wasBusy || session.busy) continue;
+      void externalSessionStat(link.harness, link.path)
+        .then(({ size, mtimeMs }) =>
+          markExternalSessionSynced(
+            session.id,
+            link.providerSessionId,
+            size,
+            mtimeMs,
+          ),
+        )
+        .then((stored) => replaceProviderLink(session.id, stored))
+        .catch(() => undefined);
+    }
+  }, [sessions, replaceProviderLink]);
 
   // Cache the OS decision so a turn ending later can skip a denied banner.
   useEffect(() => {
@@ -6282,6 +6402,19 @@ export default function App({
         return true;
       }
 
+      // Catch up with turns another client added before resuming the chat.
+      if (!options?.externalSynced && !current.busy && adoptedLink(current)) {
+        return (async () => {
+          await syncAdoptedSession(sessionId).catch(() => 0);
+          return submitAfterProjectSyncRef.current(
+            sessionId,
+            text,
+            attachments,
+            { ...options, externalSynced: true },
+          );
+        })();
+      }
+
       if (
         !options?.projectLocationReady &&
         looksLikeProject(current.cwd) &&
@@ -7114,6 +7247,7 @@ export default function App({
       dismissNoticesForContinuedSession,
       enqueueHarnessEvent,
       flushHarnessEvents,
+      syncAdoptedSession,
     ],
   );
   submitAfterProjectSyncRef.current = submitSession;
